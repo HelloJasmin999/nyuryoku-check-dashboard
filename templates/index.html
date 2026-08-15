@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>入力漏れ確認ダッシュボード（デモ）</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --card-bg: #ffffff;
+    --text: #1f2933;
+    --muted: #6b7280;
+    --urgent: #d64545;
+    --urgent-bg: #fdecec;
+    --ok: #2f9e58;
+    --border: #e2e8f0;
+    --accent: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 16px 60px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  header h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  header p.subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 0; }
+  .demo-badge {
+    display: inline-block;
+    background: #fff3cd;
+    color: #8a6300;
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .summary {
+    display: flex;
+    gap: 12px;
+    margin: 20px 0;
+    flex-wrap: wrap;
+  }
+  .summary .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 20px;
+    min-width: 140px;
+  }
+  .summary .card .num { font-size: 1.8rem; font-weight: bold; }
+  .summary .card.urgent .num { color: var(--urgent); }
+  .summary .card .label { color: var(--muted); font-size: 0.85rem; }
+
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tabs button {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  .tabs button.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card-bg);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+  }
+  th { background: #f8fafc; color: var(--muted); font-weight: 600; }
+  tr.urgent { background: var(--urgent-bg); }
+  .status-pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+  }
+  .status-pill.open { background: var(--urgent-bg); color: var(--urgent); }
+  .status-pill.resolved { background: #e6f4ea; color: var(--ok); }
+  .days.urgent-text { color: var(--urgent); font-weight: bold; }
+
+  button.resolve-btn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  button.resolve-btn:disabled { opacity: 0.6; cursor: default; }
+
+  #msg-box {
+    display: none;
+    margin: 12px 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+  }
+  #msg-box.error { background: #fdecec; color: var(--urgent); border: 1px solid #f3b4b4; display: block; }
+  #msg-box.info { background: #e8f0fe; color: var(--accent); border: 1px solid #b6cdf9; display: block; }
+
+  form#add-form {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-top: 24px;
+  }
+  form#add-form h2 { font-size: 1rem; margin-top: 0; }
+  form#add-form .row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  form#add-form input {
+    flex: 1;
+    min-width: 140px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  form#add-form button {
+    background: var(--ok);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  form#add-form button:disabled { opacity: 0.6; cursor: default; }
+  .empty { color: var(--muted); padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>入力漏れ確認ダッシュボード<span class="demo-badge">デモ・サンプルデータ</span></h1>
+    <p class="subtitle">医師の電子カルテ入力が漏れている・未確認の案件を一覧で見える化します（{{ urgent_days }}日以上未対応は赤で表示）。実際の患者データは使用していません。</p>
+  </header>
+
+  <div id="msg-box"></div>
+
+  <div class="summary">
+    <div class="card">
+      <div class="num" id="open-count">-</div>
+      <div class="label">未入力件数</div>
+    </div>
+    <div class="card urgent">
+      <div class="num" id="urgent-count">-</div>
+      <div class="label">{{ urgent_days }}日以上・要対応</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button data-status="all" class="active">全て</button>
+    <button data-status="open">未入力のみ</button>
+    <button data-status="resolved">確認済み</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>患者</th>
+        <th>担当医師</th>
+        <th>手術日</th>
+        <th>内容</th>
+        <th>経過日数</th>
+        <th>ステータス</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="case-list"></tbody>
+  </table>
+
+  <form id="add-form">
+    <h2>案件を追加する（デモ用）</h2>
+    <div class="row">
+      <input type="text" id="f-patient" placeholder="患者ラベル（例：患者G）" maxlength="20">
+      <input type="text" id="f-doctor" placeholder="担当医師（例：田中医師）" maxlength="20">
+      <input type="date" id="f-date">
+      <input type="text" id="f-item" placeholder="内容（例：手術で使用した材料の入力）" maxlength="50">
+    </div>
+    <button type="submit" id="f-submit">追加する</button>
+  </form>
+</div>
+
+<script>
+const caseList = document.getElementById('case-list');
+const openCountEl = document.getElementById('open-count');
+const urgentCountEl = document.getElementById('urgent-count');
+const msgBox = document.getElementById('msg-box');
+const tabs = document.querySelectorAll('.tabs button');
+let currentStatus = 'all';
+
+function showMessage(text, type) {
+  msgBox.textContent = text;
+  msgBox.className = type;
+  if (type === 'info') {
+    setTimeout(() => { msgBox.className = ''; msgBox.textContent = ''; }, 3000);
+  }
+}
+
+async function loadCases() {
+  try {
+    const res = await fetch(`/api/cases?status=${currentStatus}`);
+    if (!res.ok) throw new Error('読み込みに失敗しました');
+    const data = await res.json();
+    renderCases(data.cases);
+    openCountEl.textContent = data.summary.open_count;
+    urgentCountEl.textContent = data.summary.urgent_count;
+  } catch (e) {
+    showMessage('一覧の読み込みに失敗しました。時間を置いて再度お試しください。', 'error');
+  }
+}
+
+function renderCases(cases) {
+  caseList.innerHTML = '';
+  if (cases.length === 0) {
+    caseList.innerHTML = '<tr><td colspan="7" class="empty">対象の案件はありません</td></tr>';
+    return;
+  }
+  for (const c of cases) {
+    const tr = document.createElement('tr');
+    if (c.urgent) tr.classList.add('urgent');
+
+    const statusClass = c.status === '未入力' ? 'open' : 'resolved';
+    const daysClass = c.urgent ? 'days urgent-text' : 'days';
+
+    tr.innerHTML = `
+      <td>${escapeHtml(c.patient_label)}</td>
+      <td>${escapeHtml(c.doctor_name)}</td>
+      <td>${escapeHtml(c.surgery_date)}</td>
+      <td>${escapeHtml(c.item)}</td>
+      <td class="${daysClass}">${c.days_elapsed}日</td>
+      <td><span class="status-pill ${statusClass}">${c.status}</span></td>
+      <td></td>
+    `;
+    if (c.status === '未入力') {
+      const btn = document.createElement('button');
+      btn.className = 'resolve-btn';
+      btn.textContent = '確認済みにする';
+      btn.addEventListener('click', () => resolveCase(c.id, btn));
+      tr.lastElementChild.appendChild(btn);
+    }
+    caseList.appendChild(tr);
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+async function resolveCase(id, btn) {
+  btn.disabled = true;
+  btn.textContent = '処理中...';
+  try {
+    const res = await fetch(`/api/cases/${id}/resolve`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '更新に失敗しました');
+    showMessage('確認済みにしました。', 'info');
+    loadCases();
+  } catch (e) {
+    showMessage(e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = '確認済みにする';
+  }
+}
+
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    tabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentStatus = tab.dataset.status;
+    loadCases();
+  });
+});
+
+const addForm = document.getElementById('add-form');
+const submitBtn = document.getElementById('f-submit');
+addForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const patient_label = document.getElementById('f-patient').value.trim();
+  const doctor_name = document.getElementById('f-doctor').value.trim();
+  const surgery_date = document.getElementById('f-date').value;
+  const item = document.getElementById('f-item').value.trim();
+
+  if (!patient_label || !doctor_name || !surgery_date || !item) {
+    showMessage('すべての項目を入力してください。', 'error');
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = '追加中...';
+  try {
+    const res = await fetch('/api/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_label, doctor_name, surgery_date, item })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '追加に失敗しました');
+    addForm.reset();
+    showMessage('案件を追加しました。', 'info');
+    loadCases();
+  } catch (e) {
+    showMessage(e.message, 'error');
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = '追加する';
+  }
+});
+
+loadCases();
+</script>
+</body>
+</html>
