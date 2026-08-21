@@ -12,7 +12,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-`http://localhost:5000` を開くと確認できます。
+`http://localhost:5000` を開くと確認できます（対応ブラウザ：Chrome / Edge）。
 
 ## できること
 
