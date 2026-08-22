@@ -37,6 +37,16 @@
     margin-left: 8px;
     vertical-align: middle;
   }
+  .staging-badge {
+    display: inline-block;
+    background: #ede9fe;
+    color: #6d28d9;
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
   .summary {
     display: flex;
     gap: 12px;
@@ -144,7 +154,7 @@
 <body>
 <div class="container">
   <header>
-    <h1>入力漏れ確認ダッシュボード<span class="demo-badge">デモ・サンプルデータ</span></h1>
+    <h1>入力漏れ確認ダッシュボード<span class="demo-badge">デモ・サンプルデータ</span><span class="staging-badge">検証環境（staging）</span></h1>
     <p class="subtitle">医師の電子カルテ入力が漏れている・未確認の案件を一覧で見える化します（{{ urgent_days }}日以上未対応は赤で表示）。実際の患者データは使用していません。</p>
   </header>
 
