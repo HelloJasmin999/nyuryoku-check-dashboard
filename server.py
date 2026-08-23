@@ -91,7 +91,9 @@ def row_to_case(row):
 
 @app.route("/")
 def index():
-    return render_template("index.html", urgent_days=URGENT_DAYS)
+    environment_name = os.environ.get("RAILWAY_ENVIRONMENT_NAME", "")
+    is_staging = environment_name == "staging"
+    return render_template("index.html", urgent_days=URGENT_DAYS, is_staging=is_staging)
 
 
 @app.route("/api/cases", methods=["GET"])
