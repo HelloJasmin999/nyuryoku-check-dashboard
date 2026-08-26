@@ -91,8 +91,7 @@ def row_to_case(row):
 
 @app.route("/")
 def index():
-    environment_name = os.environ.get("RAILWAY_ENVIRONMENT_NAME", "")
-    is_staging = environment_name == "staging"
+    is_staging = os.environ.get("APP_ENV", "") == "staging"
     return render_template("index.html", urgent_days=URGENT_DAYS, is_staging=is_staging)
 
 
