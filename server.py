@@ -30,6 +30,11 @@ def close_db(exception=None):
         db.close()
 
 
+def column_exists(db, table, column):
+    cols = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
+    return column in cols
+
+
 def init_db():
     with sqlite3.connect(DB_PATH) as db:
         db.execute(
@@ -42,10 +47,15 @@ def init_db():
                 item TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT '未入力',
                 created_at TEXT NOT NULL,
-                resolved_at TEXT
+                resolved_at TEXT,
+                memo TEXT
             )
             """
         )
+        # 既存のcases.db（memo列がまだ無い状態）にも安全に追従させる
+        if not column_exists(db, "cases", "memo"):
+            db.execute("ALTER TABLE cases ADD COLUMN memo TEXT")
+
         count = db.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
         if count == 0:
             seed_demo_data(db)
