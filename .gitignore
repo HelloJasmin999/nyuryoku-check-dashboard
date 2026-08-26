@@ -2,3 +2,4 @@ __pycache__/
 cases.db
 .env
 .pytest_cache/
+backups/
