@@ -149,6 +149,33 @@
   }
   form#add-form button:disabled { opacity: 0.6; cursor: default; }
   .empty { color: var(--muted); padding: 20px; text-align: center; }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .role-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    margin: 0 8px;
+  }
+  .role-badge.admin { background: #ede9fe; color: #6d28d9; }
+  .role-badge.staff { background: #e6f4ea; color: #2f9e58; }
+  #logout-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--text);
+  }
 </style>
 </head>
 <body>
@@ -157,6 +184,15 @@
     <h1>入力漏れ確認ダッシュボード<span class="demo-badge">デモ・サンプルデータ</span>{% if is_staging %}<span class="staging-badge">検証環境（staging）</span>{% endif %}</h1>
     <p class="subtitle">医師の電子カルテ入力が漏れている・未確認の案件を一覧で見える化します（{{ urgent_days }}日以上未対応は赤で表示）。実際の患者データは使用していません。</p>
   </header>
+
+  <div class="topbar">
+    <div>
+      <strong>{{ tenant_name }}</strong>
+      <span class="role-badge {{ 'admin' if is_admin else 'staff' }}">{{ '管理者' if is_admin else '一般ユーザー' }}</span>
+      <span>{{ user_email }}</span>
+    </div>
+    <button id="logout-btn" type="button">ログアウト</button>
+  </div>
 
   <div id="msg-box"></div>
 
@@ -192,6 +228,7 @@
     <tbody id="case-list"></tbody>
   </table>
 
+  {% if is_admin %}
   <form id="add-form">
     <h2>案件を追加する（デモ用）</h2>
     <div class="row">
@@ -202,6 +239,9 @@
     </div>
     <button type="submit" id="f-submit">追加する</button>
   </form>
+  {% else %}
+  <p class="empty" style="margin-top:24px;">案件の追加は管理者のみ行えます。</p>
+  {% endif %}
 </div>
 
 <script>
@@ -211,6 +251,19 @@ const urgentCountEl = document.getElementById('urgent-count');
 const msgBox = document.getElementById('msg-box');
 const tabs = document.querySelectorAll('.tabs button');
 let currentStatus = 'all';
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST' });
+  window.location.href = '/login';
+});
+
+async function handleAuthExpired(res) {
+  if (res.status === 401) {
+    window.location.href = '/login';
+    return true;
+  }
+  return false;
+}
 
 function showMessage(text, type) {
   msgBox.textContent = text;
@@ -223,6 +276,7 @@ function showMessage(text, type) {
 async function loadCases() {
   try {
     const res = await fetch(`/api/cases?status=${currentStatus}`);
+    if (await handleAuthExpired(res)) return;
     if (!res.ok) throw new Error('読み込みに失敗しました');
     const data = await res.json();
     renderCases(data.cases);
@@ -277,6 +331,7 @@ async function resolveCase(id, btn) {
   btn.textContent = '処理中...';
   try {
     const res = await fetch(`/api/cases/${id}/resolve`, { method: 'POST' });
+    if (await handleAuthExpired(res)) return;
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '更新に失敗しました');
     showMessage('確認済みにしました。', 'info');
@@ -298,39 +353,42 @@ tabs.forEach(tab => {
 });
 
 const addForm = document.getElementById('add-form');
-const submitBtn = document.getElementById('f-submit');
-addForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const patient_label = document.getElementById('f-patient').value.trim();
-  const doctor_name = document.getElementById('f-doctor').value.trim();
-  const surgery_date = document.getElementById('f-date').value;
-  const item = document.getElementById('f-item').value.trim();
+if (addForm) {
+  const submitBtn = document.getElementById('f-submit');
+  addForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const patient_label = document.getElementById('f-patient').value.trim();
+    const doctor_name = document.getElementById('f-doctor').value.trim();
+    const surgery_date = document.getElementById('f-date').value;
+    const item = document.getElementById('f-item').value.trim();
 
-  if (!patient_label || !doctor_name || !surgery_date || !item) {
-    showMessage('すべての項目を入力してください。', 'error');
-    return;
-  }
+    if (!patient_label || !doctor_name || !surgery_date || !item) {
+      showMessage('すべての項目を入力してください。', 'error');
+      return;
+    }
 
-  submitBtn.disabled = true;
-  submitBtn.textContent = '追加中...';
-  try {
-    const res = await fetch('/api/cases', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ patient_label, doctor_name, surgery_date, item })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '追加に失敗しました');
-    addForm.reset();
-    showMessage('案件を追加しました。', 'info');
-    loadCases();
-  } catch (e) {
-    showMessage(e.message, 'error');
-  } finally {
-    submitBtn.disabled = false;
-    submitBtn.textContent = '追加する';
-  }
-});
+    submitBtn.disabled = true;
+    submitBtn.textContent = '追加中...';
+    try {
+      const res = await fetch('/api/cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patient_label, doctor_name, surgery_date, item })
+      });
+      if (await handleAuthExpired(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '追加に失敗しました');
+      addForm.reset();
+      showMessage('案件を追加しました。', 'info');
+      loadCases();
+    } catch (e) {
+      showMessage(e.message, 'error');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = '追加する';
+    }
+  });
+}
 
 loadCases();
 </script>

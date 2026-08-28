@@ -1,12 +1,23 @@
 import os
+import re
+import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
+from functools import wraps
 from pathlib import Path
 
-from flask import Flask, g, jsonify, render_template, request
+from flask import Flask, g, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024  # 200KB で十分。壊れた巨大データは弾く
+
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+if not os.environ.get("SECRET_KEY"):
+    app.logger.warning(
+        "SECRET_KEY未設定：開発用の一時キーで起動します。"
+        "本番環境ではRenderのVariablesにSECRET_KEYを設定してください（未設定だと再起動のたびに全員ログアウトされます）。"
+    )
 
 DB_PATH = Path(__file__).parent / "cases.db"
 URGENT_DAYS = 3  # これ以上未入力が続いたら「要対応」として赤く表示
@@ -14,6 +25,10 @@ URGENT_DAYS = 3  # これ以上未入力が続いたら「要対応」として�
 PATIENT_LABEL_MAX = 20
 DOCTOR_NAME_MAX = 20
 ITEM_MAX = 50
+PASSWORD_MIN = 8
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+VERIFY_TOKEN_HOURS = 24
+RESET_TOKEN_HOURS = 1
 
 
 def get_db():
@@ -39,8 +54,18 @@ def init_db():
     with sqlite3.connect(DB_PATH) as db:
         db.execute(
             """
+            CREATE TABLE IF NOT EXISTS tenants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS cases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL,
                 patient_label TEXT NOT NULL,
                 doctor_name TEXT NOT NULL,
                 surgery_date TEXT NOT NULL,
@@ -48,38 +73,76 @@ def init_db():
                 status TEXT NOT NULL DEFAULT '未入力',
                 created_at TEXT NOT NULL,
                 resolved_at TEXT,
-                memo TEXT
+                memo TEXT,
+                FOREIGN KEY (tenant_id) REFERENCES tenants (id)
             )
             """
         )
-        # 既存のcases.db（memo列がまだ無い状態）にも安全に追従させる
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'staff' CHECK (role IN ('admin', 'staff')),
+                email_verified INTEGER NOT NULL DEFAULT 0,
+                verification_token TEXT,
+                verification_expires TEXT,
+                reset_token TEXT,
+                reset_expires TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (tenant_id) REFERENCES tenants (id)
+            )
+            """
+        )
+        # 既存のcases.db（memo列・tenant_id列がまだ無い状態）にも安全に追従させる
         if not column_exists(db, "cases", "memo"):
             db.execute("ALTER TABLE cases ADD COLUMN memo TEXT")
+        if not column_exists(db, "cases", "tenant_id"):
+            db.execute("ALTER TABLE cases ADD COLUMN tenant_id INTEGER")
+
+        tenant_count = db.execute("SELECT COUNT(*) FROM tenants").fetchone()[0]
+        if tenant_count == 0:
+            seed_demo_tenants(db)
+
+        # tenant_id未設定の既存データは、移行時に混ざらないよう先頭テナントに寄せる
+        default_tenant_id = db.execute("SELECT id FROM tenants ORDER BY id LIMIT 1").fetchone()[0]
+        db.execute("UPDATE cases SET tenant_id = ? WHERE tenant_id IS NULL", (default_tenant_id,))
 
         count = db.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
         if count == 0:
             seed_demo_data(db)
 
 
+def seed_demo_tenants(db):
+    db.execute("INSERT INTO tenants (slug, name) VALUES ('sakura', 'さくらクリニック')")
+    db.execute("INSERT INTO tenants (slug, name) VALUES ('midori', 'みどり病院')")
+    db.commit()
+
+
 def seed_demo_data(db):
+    tenant_ids = [row[0] for row in db.execute("SELECT id FROM tenants ORDER BY id")]
+    sakura_id, midori_id = tenant_ids[0], tenant_ids[1]
+
     today = date.today()
     demo_rows = [
-        ("患者A", "佐藤医師", today - timedelta(days=5), "手術で使用した材料の入力", "未入力"),
-        ("患者B", "鈴木医師", today - timedelta(days=4), "術後診断の入力", "未入力"),
-        ("患者C", "佐藤医師", today - timedelta(days=2), "手術で使用した材料の入力", "未入力"),
-        ("患者D", "高橋医師", today - timedelta(days=1), "術後診断の入力", "未入力"),
-        ("患者E", "鈴木医師", today - timedelta(days=6), "手術で使用した材料の入力", "確認済み"),
-        ("患者F", "高橋医師", today - timedelta(days=8), "術後診断の入力", "確認済み"),
+        (sakura_id, "患者A", "佐藤医師", today - timedelta(days=5), "手術で使用した材料の入力", "未入力"),
+        (sakura_id, "患者B", "鈴木医師", today - timedelta(days=4), "術後診断の入力", "未入力"),
+        (sakura_id, "患者E", "鈴木医師", today - timedelta(days=6), "手術で使用した材料の入力", "確認済み"),
+        (midori_id, "患者C", "佐藤医師", today - timedelta(days=2), "手術で使用した材料の入力", "未入力"),
+        (midori_id, "患者D", "高橋医師", today - timedelta(days=1), "術後診断の入力", "未入力"),
+        (midori_id, "患者F", "高橋医師", today - timedelta(days=8), "術後診断の入力", "確認済み"),
     ]
     now = datetime.now().isoformat()
-    for patient_label, doctor_name, surgery_date, item, status in demo_rows:
+    for tenant_id, patient_label, doctor_name, surgery_date, item, status in demo_rows:
         resolved_at = now if status == "確認済み" else None
         db.execute(
             """
-            INSERT INTO cases (patient_label, doctor_name, surgery_date, item, status, created_at, resolved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO cases (tenant_id, patient_label, doctor_name, surgery_date, item, status, created_at, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (patient_label, doctor_name, surgery_date.isoformat(), item, status, now, resolved_at),
+            (tenant_id, patient_label, doctor_name, surgery_date.isoformat(), item, status, now, resolved_at),
         )
     db.commit()
 
@@ -99,27 +162,314 @@ def row_to_case(row):
     }
 
 
+# ---------------------------------------------------------------------------
+# 認証（サインアップ・ログイン・パスワード再発行・ロール）
+# ---------------------------------------------------------------------------
+
+
+def get_user_by_id(user_id):
+    db = get_db()
+    return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def current_user():
+    """今のセッションでログイン中のユーザー行（無ければNone）を返す。
+
+    第16回（課題28）まではクリニック切替ヘッダ(X-Clinic-Id)を利用者が自由に
+    書き換えられる暫定方式だったが、今回からログインセッションだけを信頼できる
+    情報源にする。tenant_idは必ずここ（＝ログイン中のユーザー自身が所属する
+    クリニック）から取得し、リクエスト側からの自己申告は一切受け付けない。
+    """
+    if "user" not in g:
+        user_id = session.get("user_id")
+        g.user = get_user_by_id(user_id) if user_id else None
+    return g.user
+
+
+def login_required_page(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if current_user() is None:
+            return redirect(url_for("login_page"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def login_required_api(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if current_user() is None:
+            return jsonify({"error": "ログインが必要です。"}), 401
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def admin_required_api(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if user is None:
+            return jsonify({"error": "ログインが必要です。"}), 401
+        if user["role"] != "admin":
+            return jsonify({"error": "管理者のみ実行できます。"}), 403
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def token_expired(expires_iso):
+    return expires_iso is None or datetime.fromisoformat(expires_iso) < datetime.now()
+
+
+@app.route("/signup")
+def signup_page():
+    return render_template("signup.html")
+
+
+@app.route("/api/signup", methods=["POST"])
+def signup():
+    data = request.get_json(silent=True) or {}
+    tenant_id_raw = data.get("tenant_id")
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+
+    if not tenant_id_raw or not email or not password:
+        return jsonify({"error": "すべての項目を入力してください。"}), 400
+    if not EMAIL_RE.match(email):
+        return jsonify({"error": "メールアドレスの形式が正しくありません。"}), 400
+    if len(password) < PASSWORD_MIN:
+        return jsonify({"error": f"パスワードは{PASSWORD_MIN}文字以上にしてください。"}), 400
+
+    try:
+        tenant_id = int(tenant_id_raw)
+    except ValueError:
+        return jsonify({"error": "クリニックの指定が正しくありません。"}), 400
+
+    db = get_db()
+    tenant = db.execute("SELECT id FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+    if tenant is None:
+        return jsonify({"error": "存在しないクリニックです。"}), 400
+
+    existing = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if existing is not None:
+        return jsonify({"error": "このメールアドレスはすでに登録されています。"}), 400
+
+    # そのクリニックで最初に登録した人が自動的に管理者、2人目以降は一般ユーザー。
+    user_count = db.execute(
+        "SELECT COUNT(*) FROM users WHERE tenant_id = ?", (tenant_id,)
+    ).fetchone()[0]
+    role = "admin" if user_count == 0 else "staff"
+
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.now() + timedelta(hours=VERIFY_TOKEN_HOURS)).isoformat()
+    db.execute(
+        """
+        INSERT INTO users (tenant_id, email, password_hash, role, email_verified,
+                            verification_token, verification_expires, created_at)
+        VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+        """,
+        (
+            tenant_id,
+            email,
+            generate_password_hash(password),
+            role,
+            token,
+            expires,
+            datetime.now().isoformat(),
+        ),
+    )
+    db.commit()
+
+    verify_url = url_for("verify_email", token=token)
+    app.logger.info("【デモ】確認リンク（本来はメール送信）: %s", verify_url)
+    return jsonify({"ok": True, "verify_url": verify_url}), 201
+
+
+@app.route("/verify/<token>")
+def verify_email(token):
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE verification_token = ?", (token,)).fetchone()
+    if row is None:
+        return redirect(url_for("login_page", error="invalid_token"))
+    if token_expired(row["verification_expires"]):
+        return redirect(url_for("login_page", error="expired_token"))
+
+    db.execute(
+        "UPDATE users SET email_verified = 1, verification_token = NULL, verification_expires = NULL WHERE id = ?",
+        (row["id"],),
+    )
+    db.commit()
+    return redirect(url_for("login_page", verified="1"))
+
+
+@app.route("/login")
+def login_page():
+    return render_template(
+        "login.html",
+        verified=request.args.get("verified"),
+        error=request.args.get("error"),
+        reset=request.args.get("reset"),
+    )
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+
+    db = get_db()
+    user = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    # メール未登録とパスワード不一致を同じメッセージにし、
+    # どちらが間違っているかを外部から推測されないようにする。
+    if user is None or not check_password_hash(user["password_hash"], password):
+        return jsonify({"error": "メールアドレスまたはパスワードが違います。"}), 401
+    if not user["email_verified"]:
+        return (
+            jsonify({"error": "メールアドレスの確認がまだ完了していません。届いた確認リンクをクリックしてください。"}),
+            403,
+        )
+
+    session.clear()
+    session["user_id"] = user["id"]
+    return jsonify({"ok": True})
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/me")
+@login_required_api
+def me():
+    user = current_user()
+    db = get_db()
+    tenant = db.execute("SELECT * FROM tenants WHERE id = ?", (user["tenant_id"],)).fetchone()
+    return jsonify(
+        {
+            "email": user["email"],
+            "role": user["role"],
+            "tenant_id": user["tenant_id"],
+            "tenant_name": tenant["name"],
+        }
+    )
+
+
+@app.route("/forgot-password")
+def forgot_password_page():
+    return render_template("forgot_password.html")
+
+
+@app.route("/api/forgot-password", methods=["POST"])
+def forgot_password():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+
+    db = get_db()
+    user = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if user is None:
+        # 登録の有無を外部から判別できないよう、未登録でも同じ形式の応答にする。
+        return jsonify({"ok": True, "reset_url": None})
+
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.now() + timedelta(hours=RESET_TOKEN_HOURS)).isoformat()
+    db.execute(
+        "UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?",
+        (token, expires, user["id"]),
+    )
+    db.commit()
+
+    reset_url = url_for("reset_password_page", token=token)
+    app.logger.info("【デモ】パスワード再設定リンク（本来はメール送信）: %s", reset_url)
+    return jsonify({"ok": True, "reset_url": reset_url})
+
+
+@app.route("/reset-password/<token>")
+def reset_password_page(token):
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE reset_token = ?", (token,)).fetchone()
+    valid = row is not None and not token_expired(row["reset_expires"])
+    return render_template("reset_password.html", token=token, valid=valid)
+
+
+@app.route("/api/reset-password/<token>", methods=["POST"])
+def reset_password(token):
+    data = request.get_json(silent=True) or {}
+    password = data.get("password") or ""
+    if len(password) < PASSWORD_MIN:
+        return jsonify({"error": f"パスワードは{PASSWORD_MIN}文字以上にしてください。"}), 400
+
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE reset_token = ?", (token,)).fetchone()
+    if row is None or token_expired(row["reset_expires"]):
+        return jsonify({"error": "リンクの有効期限が切れています。もう一度お試しください。"}), 400
+
+    db.execute(
+        "UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?",
+        (generate_password_hash(password), row["id"]),
+    )
+    db.commit()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# 画面・案件API
+# ---------------------------------------------------------------------------
+
+
 @app.route("/")
+@login_required_page
 def index():
+    user = current_user()
+    db = get_db()
+    tenant = db.execute("SELECT * FROM tenants WHERE id = ?", (user["tenant_id"],)).fetchone()
     is_staging = os.environ.get("APP_ENV", "") == "staging"
-    return render_template("index.html", urgent_days=URGENT_DAYS, is_staging=is_staging)
+    return render_template(
+        "index.html",
+        urgent_days=URGENT_DAYS,
+        is_staging=is_staging,
+        user_email=user["email"],
+        is_admin=user["role"] == "admin",
+        tenant_name=tenant["name"],
+    )
+
+
+@app.route("/api/tenants", methods=["GET"])
+def list_tenants():
+    # サインアップ画面のクリニック選択に使うため、名前一覧のみ認証不要で公開する。
+    db = get_db()
+    rows = db.execute("SELECT id, slug, name FROM tenants ORDER BY id").fetchall()
+    return jsonify({"tenants": [dict(r) for r in rows]})
 
 
 @app.route("/api/cases", methods=["GET"])
+@login_required_api
 def list_cases():
+    tenant_id = current_user()["tenant_id"]
+
     status = request.args.get("status", "all")
     db = get_db()
     if status == "open":
-        rows = db.execute("SELECT * FROM cases WHERE status = '未入力'").fetchall()
+        rows = db.execute(
+            "SELECT * FROM cases WHERE tenant_id = ? AND status = '未入力'", (tenant_id,)
+        ).fetchall()
     elif status == "resolved":
-        rows = db.execute("SELECT * FROM cases WHERE status = '確認済み'").fetchall()
+        rows = db.execute(
+            "SELECT * FROM cases WHERE tenant_id = ? AND status = '確認済み'", (tenant_id,)
+        ).fetchall()
     else:
-        rows = db.execute("SELECT * FROM cases").fetchall()
+        rows = db.execute("SELECT * FROM cases WHERE tenant_id = ?", (tenant_id,)).fetchall()
 
     cases = [row_to_case(r) for r in rows]
     cases.sort(key=lambda c: (-c["days_elapsed"] if c["status"] == "未入力" else 999))
 
-    open_cases = db.execute("SELECT * FROM cases WHERE status = '未入力'").fetchall()
+    open_cases = db.execute(
+        "SELECT * FROM cases WHERE tenant_id = ? AND status = '未入力'", (tenant_id,)
+    ).fetchall()
     open_cases = [row_to_case(r) for r in open_cases]
     summary = {
         "open_count": len(open_cases),
@@ -129,7 +479,10 @@ def list_cases():
 
 
 @app.route("/api/cases", methods=["POST"])
+@admin_required_api
 def create_case():
+    tenant_id = current_user()["tenant_id"]
+
     data = request.get_json(silent=True) or {}
     patient_label = (data.get("patient_label") or "").strip()
     doctor_name = (data.get("doctor_name") or "").strip()
@@ -153,26 +506,33 @@ def create_case():
     now = datetime.now().isoformat()
     db.execute(
         """
-        INSERT INTO cases (patient_label, doctor_name, surgery_date, item, status, created_at, resolved_at)
-        VALUES (?, ?, ?, ?, '未入力', ?, NULL)
+        INSERT INTO cases (tenant_id, patient_label, doctor_name, surgery_date, item, status, created_at, resolved_at)
+        VALUES (?, ?, ?, ?, ?, '未入力', ?, NULL)
         """,
-        (patient_label, doctor_name, surgery_date, item, now),
+        (tenant_id, patient_label, doctor_name, surgery_date, item, now),
     )
     db.commit()
     return jsonify({"ok": True}), 201
 
 
 @app.route("/api/cases/<int:case_id>/resolve", methods=["POST"])
+@login_required_api
 def resolve_case(case_id):
+    tenant_id = current_user()["tenant_id"]
+
     db = get_db()
-    row = db.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
+    # tenant_idも条件に含めることで、他テナントのIDを推測して送っても
+    # 「対象なし」として扱われ、絶対に更新できないようにする。
+    row = db.execute(
+        "SELECT * FROM cases WHERE id = ? AND tenant_id = ?", (case_id, tenant_id)
+    ).fetchone()
     if row is None:
         return jsonify({"error": "対象の案件が見つかりません。"}), 404
 
     now = datetime.now().isoformat()
     db.execute(
-        "UPDATE cases SET status = '確認済み', resolved_at = ? WHERE id = ?",
-        (now, case_id),
+        "UPDATE cases SET status = '確認済み', resolved_at = ? WHERE id = ? AND tenant_id = ?",
+        (now, case_id, tenant_id),
     )
     db.commit()
     return jsonify({"ok": True})

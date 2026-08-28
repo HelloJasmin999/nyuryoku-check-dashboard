@@ -1,0 +1,80 @@
+{% extends "auth_base.html" %}
+{% block title %}新規登録{% endblock %}
+{% block content %}
+<h1>新規登録</h1>
+<p class="sub">所属するクリニックを選び、メールアドレスとパスワードを登録してください。</p>
+
+<div id="msg-box" class="msg"></div>
+
+<label for="f-tenant">所属するクリニック</label>
+<select id="f-tenant"></select>
+
+<label for="f-email">メールアドレス</label>
+<input type="email" id="f-email" autocomplete="email" placeholder="you@example.com">
+
+<label for="f-password">パスワード（{{ '' }}8文字以上）</label>
+<input type="password" id="f-password" autocomplete="new-password">
+
+<button type="button" class="primary" id="f-submit">登録する</button>
+
+<p class="demo-note">※そのクリニックで最初に登録した方が自動的に「管理者」になります。</p>
+
+<div class="links"><a href="/login">すでにアカウントをお持ちの方はこちら（ログイン）</a></div>
+
+<script>
+const msgBox = document.getElementById('msg-box');
+function showMsg(html, type) {
+  msgBox.className = 'msg ' + type;
+  msgBox.innerHTML = html;
+}
+
+async function loadTenants() {
+  const res = await fetch('/api/tenants');
+  const data = await res.json();
+  const sel = document.getElementById('f-tenant');
+  sel.innerHTML = '';
+  for (const t of data.tenants) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = t.name;
+    sel.appendChild(opt);
+  }
+}
+loadTenants();
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+const submitBtn = document.getElementById('f-submit');
+submitBtn.addEventListener('click', async () => {
+  const tenant_id = document.getElementById('f-tenant').value;
+  const email = document.getElementById('f-email').value.trim();
+  const password = document.getElementById('f-password').value;
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = '登録中...';
+  try {
+    const res = await fetch('/api/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant_id, email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '登録に失敗しました');
+    showMsg(
+      '登録しました。<br>【デモ用】本来はメールで届く確認リンクです。クリックして確認してください：<br>' +
+      '<a href="' + escapeHtml(data.verify_url) + '">' + escapeHtml(data.verify_url) + '</a>',
+      'info'
+    );
+    submitBtn.style.display = 'none';
+  } catch (e) {
+    showMsg(escapeHtml(e.message), 'error');
+    submitBtn.disabled = false;
+    submitBtn.textContent = '登録する';
+  }
+});
+</script>
+{% endblock %}
