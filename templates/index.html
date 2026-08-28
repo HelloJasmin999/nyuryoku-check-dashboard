@@ -167,6 +167,21 @@
   }
   .role-badge.admin { background: #ede9fe; color: #6d28d9; }
   .role-badge.staff { background: #e6f4ea; color: #2f9e58; }
+  .plan-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    margin-right: 8px;
+  }
+  .plan-badge.free { background: #f1f5f9; color: var(--muted); }
+  .plan-badge.pro { background: #fff3cd; color: #8a6300; }
+  #pricing-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.8rem;
+    margin-right: 12px;
+  }
   #logout-btn {
     background: none;
     border: 1px solid var(--border);
@@ -188,10 +203,14 @@
   <div class="topbar">
     <div>
       <strong>{{ tenant_name }}</strong>
+      <span class="plan-badge {{ tenant_plan }}">{{ 'プロプラン' if tenant_plan == 'pro' else 'フリープラン' }}</span>
       <span class="role-badge {{ 'admin' if is_admin else 'staff' }}">{{ '管理者' if is_admin else '一般ユーザー' }}</span>
       <span>{{ user_email }}</span>
     </div>
-    <button id="logout-btn" type="button">ログアウト</button>
+    <div>
+      <a id="pricing-link" href="/pricing">料金プラン</a>
+      <button id="logout-btn" type="button">ログアウト</button>
+    </div>
   </div>
 
   <div id="msg-box"></div>
