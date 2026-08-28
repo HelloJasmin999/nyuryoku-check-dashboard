@@ -1,2 +1,4 @@
 flask
 gunicorn
+stripe
+python-dotenv

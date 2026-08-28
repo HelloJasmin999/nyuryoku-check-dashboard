@@ -40,3 +40,7 @@ push→本番URLまでの手順は [リリース手順.md](./リリース手順.
 ## 認証基盤
 
 サインアップ（メール確認）・ログイン／ログアウト・パスワード再発行・ロール（管理者／一般）の設計と動作確認の記録は [docs/auth-design.md](./docs/auth-design.md) ・ [docs/auth-record.md](./docs/auth-record.md) を参照。
+
+## 課金（プラン・Stripe決済）
+
+料金プラン（フリー／プロ）の設計と、Stripeテストモードでの決済動作確認の記録は [docs/billing-design.md](./docs/billing-design.md) ・ [docs/billing-record.md](./docs/billing-record.md) を参照。
