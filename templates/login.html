@@ -1,0 +1,66 @@
+{% extends "auth_base.html" %}
+{% block title %}ログイン{% endblock %}
+{% block content %}
+<h1>ログイン</h1>
+<p class="sub">入力漏れ確認ダッシュボード</p>
+
+<div id="msg-box" class="msg"
+  {%- if verified %} style="display:block" {%- elif error == 'invalid_token' or error == 'expired_token' %} style="display:block" {%- endif -%}
+></div>
+
+<label for="f-email">メールアドレス</label>
+<input type="email" id="f-email" autocomplete="email">
+
+<label for="f-password">パスワード</label>
+<input type="password" id="f-password" autocomplete="current-password">
+
+<button type="button" class="primary" id="f-submit">ログイン</button>
+
+<div class="links"><a href="/forgot-password">パスワードをお忘れの方はこちら</a></div>
+<div class="links"><a href="/signup">初めての方はこちら（新規登録）</a></div>
+
+<script>
+const msgBox = document.getElementById('msg-box');
+function showMsg(text, type) {
+  msgBox.className = 'msg ' + type;
+  msgBox.textContent = text;
+}
+
+const verified = {{ 'true' if verified else 'false' }};
+const error = {{ (error | tojson) if error else 'null' }};
+const resetDone = {{ 'true' if reset else 'false' }};
+
+if (verified) {
+  showMsg('メールアドレスの確認が完了しました。ログインしてください。', 'info');
+} else if (error === 'invalid_token') {
+  showMsg('確認リンクが正しくありません。', 'error');
+} else if (error === 'expired_token') {
+  showMsg('確認リンクの有効期限が切れています。もう一度登録し直してください。', 'error');
+} else if (resetDone) {
+  showMsg('パスワードを再設定しました。新しいパスワードでログインしてください。', 'info');
+}
+
+const submitBtn = document.getElementById('f-submit');
+submitBtn.addEventListener('click', async () => {
+  const email = document.getElementById('f-email').value.trim();
+  const password = document.getElementById('f-password').value;
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'ログイン中...';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'ログインに失敗しました');
+    window.location.href = '/';
+  } catch (e) {
+    showMsg(e.message, 'error');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'ログイン';
+  }
+});
+</script>
+{% endblock %}
