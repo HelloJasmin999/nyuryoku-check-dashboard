@@ -300,3 +300,97 @@ def test_pro_plan_has_no_case_limit():
     for i in range(server.FREE_PLAN_CASE_LIMIT + 5):
         res = client.post("/api/cases", json=new_case_payload(f"プロ患者{i}"))
         assert res.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# 継続課金・Webhook（第19回・課金②、まずは「解約されたら停止」の1本だけ）
+# ---------------------------------------------------------------------------
+
+
+def get_plan(tenant_id):
+    with app.app_context():
+        return server.get_tenant(tenant_id)["plan"]
+
+
+def test_webhook_rejects_invalid_signature(monkeypatch):
+    monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
+    client = app.test_client()
+
+    with patch(
+        "server.stripe.Webhook.construct_event",
+        side_effect=server.stripe.error.SignatureVerificationError("bad signature", "sig_header"),
+    ):
+        res = client.post(
+            "/webhooks/stripe", data=b"{}", headers={"Stripe-Signature": "invalid"}
+        )
+
+    assert res.status_code == 400
+
+
+def test_webhook_without_secret_configured_returns_error(monkeypatch):
+    monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", None)
+    client = app.test_client()
+
+    res = client.post("/webhooks/stripe", data=b"{}")
+    assert res.status_code == 500
+
+
+def test_webhook_subscription_deleted_downgrades_plan(monkeypatch):
+    monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
+    client = app.test_client()
+    tenant_a, _ = get_tenant_ids(client)
+    admin_pw = signup_and_verify(client, tenant_a, "cancel-admin@example.com")
+    login(client, "cancel-admin@example.com", admin_pw)
+    tenant_id = client.get("/api/me").get_json()["tenant_id"]
+
+    upgrade_to_pro(client, tenant_id)
+    assert get_plan(tenant_id) == server.PLAN_PRO
+
+    fake_event = SimpleNamespace(
+        type="customer.subscription.deleted",
+        data=SimpleNamespace(object=SimpleNamespace(id="sub_test")),
+    )
+    with patch("server.stripe.Webhook.construct_event", return_value=fake_event):
+        res = client.post(
+            "/webhooks/stripe", data=b"{}", headers={"Stripe-Signature": "dummy"}
+        )
+
+    assert res.status_code == 200
+    assert get_plan(tenant_id) == server.PLAN_FREE
+
+
+def test_webhook_ignores_unknown_subscription_id(monkeypatch):
+    monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
+    client = app.test_client()
+    tenant_a, _ = get_tenant_ids(client)
+    admin_pw = signup_and_verify(client, tenant_a, "cancel-noop-admin@example.com")
+    login(client, "cancel-noop-admin@example.com", admin_pw)
+    tenant_id = client.get("/api/me").get_json()["tenant_id"]
+
+    upgrade_to_pro(client, tenant_id)
+
+    fake_event = SimpleNamespace(
+        type="customer.subscription.deleted",
+        data=SimpleNamespace(object=SimpleNamespace(id="sub_does_not_match_anyone")),
+    )
+    with patch("server.stripe.Webhook.construct_event", return_value=fake_event):
+        res = client.post(
+            "/webhooks/stripe", data=b"{}", headers={"Stripe-Signature": "dummy"}
+        )
+
+    assert res.status_code == 200
+    # 一致するテナントが無いので、この人自身のプランは変わらない
+    assert get_plan(tenant_id) == server.PLAN_PRO
+
+
+def test_webhook_ignores_unrelated_event_types(monkeypatch):
+    monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
+    client = app.test_client()
+
+    fake_event = SimpleNamespace(type="invoice.paid", data=SimpleNamespace(object=SimpleNamespace()))
+    with patch("server.stripe.Webhook.construct_event", return_value=fake_event):
+        res = client.post(
+            "/webhooks/stripe", data=b"{}", headers={"Stripe-Signature": "dummy"}
+        )
+
+    assert res.status_code == 200
