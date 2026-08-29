@@ -30,6 +30,13 @@ if not stripe.api_key:
         "Stripeのテストモードのシークレットキーを環境変数に設定してください。"
     )
 
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+if not STRIPE_WEBHOOK_SECRET:
+    app.logger.warning(
+        "STRIPE_WEBHOOK_SECRET未設定：Stripeからの通知（解約など）を受け取れません。"
+        "StripeのWebhookエンドポイント設定画面で発行される署名シークレットを環境変数に設定してください。"
+    )
+
 DB_PATH = Path(__file__).parent / "cases.db"
 URGENT_DAYS = 3  # これ以上未入力が続いたら「要対応」として赤く表示
 
@@ -691,6 +698,42 @@ def billing_success():
                 db.commit()
 
     return render_template("billing_success.html", error=error)
+
+
+@app.route("/webhooks/stripe", methods=["POST"])
+def stripe_webhook():
+    """Stripeからの通知を受け取る窓口（第19回・課金②）。
+
+    今回は範囲を「解約されたら停止」の1本に絞り、customer.subscription.deleted
+    （解約が確定したタイミングでStripeが送ってくるイベント）だけを処理する。
+    支払い失敗の猶予処理などは次回以降の拡張範囲。
+    """
+    payload = request.get_data()
+    sig_header = request.headers.get("Stripe-Signature", "")
+
+    if not STRIPE_WEBHOOK_SECRET:
+        app.logger.error("STRIPE_WEBHOOK_SECRET未設定のため、Webhook通知を処理できません。")
+        return jsonify({"error": "Webhookの準備ができていません。"}), 500
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.error.SignatureVerificationError) as e:
+        app.logger.warning("Stripe Webhookの検証に失敗: %s", e)
+        return jsonify({"error": "署名の検証に失敗しました。"}), 400
+
+    if getattr(event, "type", None) == "customer.subscription.deleted":
+        subscription = getattr(getattr(event, "data", None), "object", None)
+        subscription_id = getattr(subscription, "id", None)
+
+        db = get_db()
+        db.execute(
+            "UPDATE tenants SET plan = ? WHERE stripe_subscription_id = ?",
+            (PLAN_FREE, subscription_id),
+        )
+        db.commit()
+
+    # 未対応のイベント種類も200を返しておく（そうしないとStripeが同じ通知を再送し続ける）
+    return jsonify({"received": True})
 
 
 init_db()
