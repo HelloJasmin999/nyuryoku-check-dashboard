@@ -721,16 +721,21 @@ def stripe_webhook():
         app.logger.warning("Stripe Webhookの検証に失敗: %s", e)
         return jsonify({"error": "署名の検証に失敗しました。"}), 400
 
-    if getattr(event, "type", None) == "customer.subscription.deleted":
+    event_type = getattr(event, "type", None)
+    app.logger.info("Stripe Webhook受信: type=%r", event_type)
+
+    if event_type == "customer.subscription.deleted":
         subscription = getattr(getattr(event, "data", None), "object", None)
         subscription_id = getattr(subscription, "id", None)
+        app.logger.info("解約イベント: subscription_id=%r", subscription_id)
 
         db = get_db()
-        db.execute(
+        cursor = db.execute(
             "UPDATE tenants SET plan = ? WHERE stripe_subscription_id = ?",
             (PLAN_FREE, subscription_id),
         )
         db.commit()
+        app.logger.info("解約イベント: 更新件数=%d", cursor.rowcount)
 
     # 未対応のイベント種類も200を返しておく（そうしないとStripeが同じ通知を再送し続ける）
     return jsonify({"received": True})
