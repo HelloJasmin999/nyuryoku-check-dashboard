@@ -121,6 +121,36 @@
   }
   #msg-box.error { background: #fdecec; color: var(--urgent); border: 1px solid #f3b4b4; display: block; }
   #msg-box.info { background: #e8f0fe; color: var(--accent); border: 1px solid #b6cdf9; display: block; }
+  #msg-box a.upgrade-link {
+    margin-left: 10px;
+    font-weight: bold;
+    color: inherit;
+    text-decoration: underline;
+    white-space: nowrap;
+  }
+
+  .usage-card { min-width: 200px; }
+  .usage-card .bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--border);
+    margin-top: 6px;
+    overflow: hidden;
+  }
+  .usage-card .bar-fill { height: 100%; background: var(--accent); }
+  .usage-card .bar-fill.near-limit { background: var(--urgent); }
+  .usage-card .num.pro { color: var(--ok); font-size: 1rem; }
+
+  .export-btn {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--text);
+    margin-right: 8px;
+  }
 
   form#add-form {
     background: var(--card-bg);
@@ -208,6 +238,7 @@
       <span>{{ user_email }}</span>
     </div>
     <div>
+      {% if is_admin %}<button id="export-btn" class="export-btn" type="button">CSVエクスポート{% if tenant_plan != 'pro' %} 🔒{% endif %}</button>{% endif %}
       <a id="pricing-link" href="/pricing">料金プラン</a>
       <button id="logout-btn" type="button">ログアウト</button>
     </div>
@@ -223,6 +254,11 @@
     <div class="card urgent">
       <div class="num" id="urgent-count">-</div>
       <div class="label">{{ urgent_days }}日以上・要対応</div>
+    </div>
+    <div class="card usage-card">
+      <div class="num" id="usage-count">-</div>
+      <div class="label">案件登録数</div>
+      <div class="bar" id="usage-bar" style="display:none;"><div class="bar-fill" id="usage-bar-fill"></div></div>
     </div>
   </div>
 
@@ -267,9 +303,71 @@
 const caseList = document.getElementById('case-list');
 const openCountEl = document.getElementById('open-count');
 const urgentCountEl = document.getElementById('urgent-count');
+const usageCountEl = document.getElementById('usage-count');
+const usageBarEl = document.getElementById('usage-bar');
+const usageBarFillEl = document.getElementById('usage-bar-fill');
+const exportBtn = document.getElementById('export-btn');
 const msgBox = document.getElementById('msg-box');
 const tabs = document.querySelectorAll('.tabs button');
 let currentStatus = 'all';
+
+function showUpgradeMessage(text) {
+  msgBox.className = 'error';
+  msgBox.innerHTML = '';
+  msgBox.appendChild(document.createTextNode(text));
+  const link = document.createElement('a');
+  link.href = '/pricing';
+  link.className = 'upgrade-link';
+  link.textContent = 'プロプランにアップグレードする →';
+  msgBox.appendChild(link);
+}
+
+function renderUsage(summary) {
+  if (summary.case_limit === null) {
+    usageCountEl.textContent = `${summary.case_count}件`;
+    usageCountEl.classList.add('pro');
+    usageBarEl.style.display = 'none';
+    return;
+  }
+  usageCountEl.classList.remove('pro');
+  usageCountEl.textContent = `${summary.case_count} / ${summary.case_limit}件`;
+  usageBarEl.style.display = 'block';
+  const ratio = Math.min(1, summary.case_count / summary.case_limit);
+  usageBarFillEl.style.width = `${ratio * 100}%`;
+  usageBarFillEl.classList.toggle('near-limit', ratio >= 0.8);
+}
+
+if (exportBtn) {
+  exportBtn.addEventListener('click', async () => {
+    exportBtn.disabled = true;
+    try {
+      const res = await fetch('/api/cases/export');
+      if (await handleAuthExpired(res)) return;
+      if (!res.ok) {
+        const data = await res.json();
+        if (data.upgrade_required) {
+          showUpgradeMessage(data.error);
+        } else {
+          showMessage(data.error || 'エクスポートに失敗しました。', 'error');
+        }
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'cases.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showMessage('エクスポートに失敗しました。', 'error');
+    } finally {
+      exportBtn.disabled = false;
+    }
+  });
+}
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
   await fetch('/api/logout', { method: 'POST' });
@@ -301,6 +399,7 @@ async function loadCases() {
     renderCases(data.cases);
     openCountEl.textContent = data.summary.open_count;
     urgentCountEl.textContent = data.summary.urgent_count;
+    renderUsage(data.summary);
   } catch (e) {
     showMessage('一覧の読み込みに失敗しました。時間を置いて再度お試しください。', 'error');
   }
@@ -396,7 +495,14 @@ if (addForm) {
       });
       if (await handleAuthExpired(res)) return;
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '追加に失敗しました');
+      if (!res.ok) {
+        if (data.upgrade_required) {
+          showUpgradeMessage(data.error);
+        } else {
+          showMessage(data.error || '追加に失敗しました', 'error');
+        }
+        return;
+      }
       addForm.reset();
       showMessage('案件を追加しました。', 'info');
       loadCases();
