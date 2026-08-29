@@ -6,8 +6,12 @@ from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 
+import stripe
+from dotenv import load_dotenv
 from flask import Flask, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+
+load_dotenv()  # ローカル開発用。本番（Render）では.envは存在せず、Variablesがそのまま使われる。
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024  # 200KB で十分。壊れた巨大データは弾く
@@ -17,6 +21,20 @@ if not os.environ.get("SECRET_KEY"):
     app.logger.warning(
         "SECRET_KEY未設定：開発用の一時キーで起動します。"
         "本番環境ではRenderのVariablesにSECRET_KEYを設定してください（未設定だと再起動のたびに全員ログアウトされます）。"
+    )
+
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
+if not stripe.api_key:
+    app.logger.warning(
+        "STRIPE_SECRET_KEY未設定：決済（アップグレード）は動作しません。"
+        "Stripeのテストモードのシークレットキーを環境変数に設定してください。"
+    )
+
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+if not STRIPE_WEBHOOK_SECRET:
+    app.logger.warning(
+        "STRIPE_WEBHOOK_SECRET未設定：Stripeからの通知（解約など）を受け取れません。"
+        "StripeのWebhookエンドポイント設定画面で発行される署名シークレットを環境変数に設定してください。"
     )
 
 DB_PATH = Path(__file__).parent / "cases.db"
@@ -29,6 +47,17 @@ PASSWORD_MIN = 8
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 VERIFY_TOKEN_HOURS = 24
 RESET_TOKEN_HOURS = 1
+
+# ---------------------------------------------------------------------------
+# プラン設計（第18回・課金①）
+#   フリー：案件を累計20件まで登録可能（お試し用）
+#   プロ　：月980円で案件登録が無制限
+# 招待コード等の複雑さは持ち込まず、まずはこの2プランのみ。
+# ---------------------------------------------------------------------------
+PLAN_FREE = "free"
+PLAN_PRO = "pro"
+FREE_PLAN_CASE_LIMIT = 20
+PRO_PLAN_PRICE_JPY = 980
 
 
 def get_db():
@@ -57,7 +86,10 @@ def init_db():
             CREATE TABLE IF NOT EXISTS tenants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 slug TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL
+                name TEXT NOT NULL,
+                plan TEXT NOT NULL DEFAULT 'free',
+                stripe_customer_id TEXT,
+                stripe_subscription_id TEXT
             )
             """
         )
@@ -101,6 +133,12 @@ def init_db():
             db.execute("ALTER TABLE cases ADD COLUMN memo TEXT")
         if not column_exists(db, "cases", "tenant_id"):
             db.execute("ALTER TABLE cases ADD COLUMN tenant_id INTEGER")
+        if not column_exists(db, "tenants", "plan"):
+            db.execute("ALTER TABLE tenants ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'")
+        if not column_exists(db, "tenants", "stripe_customer_id"):
+            db.execute("ALTER TABLE tenants ADD COLUMN stripe_customer_id TEXT")
+        if not column_exists(db, "tenants", "stripe_subscription_id"):
+            db.execute("ALTER TABLE tenants ADD COLUMN stripe_subscription_id TEXT")
 
         tenant_count = db.execute("SELECT COUNT(*) FROM tenants").fetchone()[0]
         if tenant_count == 0:
@@ -184,6 +222,11 @@ def current_user():
         user_id = session.get("user_id")
         g.user = get_user_by_id(user_id) if user_id else None
     return g.user
+
+
+def get_tenant(tenant_id):
+    db = get_db()
+    return db.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
 
 
 def login_required_page(view):
@@ -347,8 +390,7 @@ def logout():
 @login_required_api
 def me():
     user = current_user()
-    db = get_db()
-    tenant = db.execute("SELECT * FROM tenants WHERE id = ?", (user["tenant_id"],)).fetchone()
+    tenant = get_tenant(user["tenant_id"])
     return jsonify(
         {
             "email": user["email"],
@@ -425,8 +467,7 @@ def reset_password(token):
 @login_required_page
 def index():
     user = current_user()
-    db = get_db()
-    tenant = db.execute("SELECT * FROM tenants WHERE id = ?", (user["tenant_id"],)).fetchone()
+    tenant = get_tenant(user["tenant_id"])
     is_staging = os.environ.get("APP_ENV", "") == "staging"
     return render_template(
         "index.html",
@@ -435,6 +476,7 @@ def index():
         user_email=user["email"],
         is_admin=user["role"] == "admin",
         tenant_name=tenant["name"],
+        tenant_plan=tenant["plan"],
     )
 
 
@@ -483,6 +525,24 @@ def list_cases():
 def create_case():
     tenant_id = current_user()["tenant_id"]
 
+    db = get_db()
+    tenant = get_tenant(tenant_id)
+    if tenant["plan"] != PLAN_PRO:
+        case_count = db.execute(
+            "SELECT COUNT(*) FROM cases WHERE tenant_id = ?", (tenant_id,)
+        ).fetchone()[0]
+        if case_count >= FREE_PLAN_CASE_LIMIT:
+            return (
+                jsonify(
+                    {
+                        "error": f"フリープランの上限（{FREE_PLAN_CASE_LIMIT}件）に達しました。"
+                        "プロプランにアップグレードすると無制限に登録できます。",
+                        "upgrade_required": True,
+                    }
+                ),
+                403,
+            )
+
     data = request.get_json(silent=True) or {}
     patient_label = (data.get("patient_label") or "").strip()
     doctor_name = (data.get("doctor_name") or "").strip()
@@ -502,7 +562,6 @@ def create_case():
     except ValueError:
         return jsonify({"error": "手術日の形式が正しくありません。"}), 400
 
-    db = get_db()
     now = datetime.now().isoformat()
     db.execute(
         """
@@ -536,6 +595,145 @@ def resolve_case(case_id):
     )
     db.commit()
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# 課金（Stripeテストモード・第18回）
+#   チェックアウト後の反映は、今回はまだWebhookを使わず、成功時に戻ってくる
+#   /billing/success でStripeにセッションの状態を直接問い合わせて確定させる、
+#   一番シンプルなやり方にした。継続課金の運用（請求失敗・解約）はWebhookが
+#   必要になる次回（第19回・課金②）に回す。
+# ---------------------------------------------------------------------------
+
+
+@app.route("/pricing")
+@login_required_page
+def pricing_page():
+    user = current_user()
+    tenant = get_tenant(user["tenant_id"])
+    return render_template(
+        "pricing.html",
+        is_admin=user["role"] == "admin",
+        tenant_plan=tenant["plan"],
+        free_limit=FREE_PLAN_CASE_LIMIT,
+        pro_price=PRO_PLAN_PRICE_JPY,
+        stripe_configured=bool(stripe.api_key),
+    )
+
+
+@app.route("/api/checkout/create-session", methods=["POST"])
+@admin_required_api
+def create_checkout_session():
+    user = current_user()
+    tenant = get_tenant(user["tenant_id"])
+
+    if tenant["plan"] == PLAN_PRO:
+        return jsonify({"error": "すでにプロプランです。"}), 400
+    if not stripe.api_key:
+        return jsonify({"error": "決済の準備ができていません（STRIPE_SECRET_KEY未設定）。"}), 500
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "jpy",
+                        "product_data": {"name": "入力漏れ確認ダッシュボード プロプラン"},
+                        "unit_amount": PRO_PLAN_PRICE_JPY,
+                        "recurring": {"interval": "month"},
+                    },
+                    "quantity": 1,
+                }
+            ],
+            client_reference_id=str(tenant["id"]),
+            customer_email=user["email"],
+            success_url=url_for("billing_success", _external=True) + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=url_for("pricing_page", _external=True),
+        )
+    except stripe.error.StripeError as e:
+        app.logger.error("Stripe決済セッション作成に失敗: %s", e)
+        return jsonify({"error": "決済ページの準備に失敗しました。時間を置いて再度お試しください。"}), 500
+
+    return jsonify({"url": checkout_session.url})
+
+
+@app.route("/billing/success")
+@login_required_page
+def billing_success():
+    user = current_user()
+    session_id = request.args.get("session_id")
+
+    error = None
+    if not session_id:
+        error = "決済情報が確認できませんでした。"
+    else:
+        try:
+            checkout_session = stripe.checkout.Session.retrieve(session_id)
+        except stripe.error.StripeError as e:
+            app.logger.error("Stripeセッション確認に失敗: %s", e)
+            checkout_session = None
+            error = "決済情報の確認に失敗しました。"
+
+        if checkout_session is not None:
+            # client_reference_idを必ずログイン中のテナントと突き合わせ、
+            # 他人のsession_idを送りつけて勝手にアップグレードされないようにする。
+            # StripeのSessionオブジェクトはdictではなく属性アクセスなので.get()は使えない。
+            if getattr(checkout_session, "client_reference_id", None) != str(user["tenant_id"]):
+                error = "この決済情報は現在のログインと一致しません。"
+            elif getattr(checkout_session, "payment_status", None) != "paid":
+                error = "お支払いが完了していません。"
+            else:
+                db = get_db()
+                db.execute(
+                    "UPDATE tenants SET plan = ?, stripe_customer_id = ?, stripe_subscription_id = ? WHERE id = ?",
+                    (
+                        PLAN_PRO,
+                        getattr(checkout_session, "customer", None),
+                        getattr(checkout_session, "subscription", None),
+                        user["tenant_id"],
+                    ),
+                )
+                db.commit()
+
+    return render_template("billing_success.html", error=error)
+
+
+@app.route("/webhooks/stripe", methods=["POST"])
+def stripe_webhook():
+    """Stripeからの通知を受け取る窓口（第19回・課金②）。
+
+    今回は範囲を「解約されたら停止」の1本に絞り、customer.subscription.deleted
+    （解約が確定したタイミングでStripeが送ってくるイベント）だけを処理する。
+    支払い失敗の猶予処理などは次回以降の拡張範囲。
+    """
+    payload = request.get_data()
+    sig_header = request.headers.get("Stripe-Signature", "")
+
+    if not STRIPE_WEBHOOK_SECRET:
+        app.logger.error("STRIPE_WEBHOOK_SECRET未設定のため、Webhook通知を処理できません。")
+        return jsonify({"error": "Webhookの準備ができていません。"}), 500
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.error.SignatureVerificationError) as e:
+        app.logger.warning("Stripe Webhookの検証に失敗: %s", e)
+        return jsonify({"error": "署名の検証に失敗しました。"}), 400
+
+    if getattr(event, "type", None) == "customer.subscription.deleted":
+        subscription = getattr(getattr(event, "data", None), "object", None)
+        subscription_id = getattr(subscription, "id", None)
+
+        db = get_db()
+        db.execute(
+            "UPDATE tenants SET plan = ? WHERE stripe_subscription_id = ?",
+            (PLAN_FREE, subscription_id),
+        )
+        db.commit()
+
+    # 未対応のイベント種類も200を返しておく（そうしないとStripeが同じ通知を再送し続ける）
+    return jsonify({"received": True})
 
 
 init_db()
