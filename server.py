@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import re
 import secrets
@@ -492,6 +494,7 @@ def list_tenants():
 @login_required_api
 def list_cases():
     tenant_id = current_user()["tenant_id"]
+    tenant = get_tenant(tenant_id)
 
     status = request.args.get("status", "all")
     db = get_db()
@@ -513,9 +516,15 @@ def list_cases():
         "SELECT * FROM cases WHERE tenant_id = ? AND status = '未入力'", (tenant_id,)
     ).fetchall()
     open_cases = [row_to_case(r) for r in open_cases]
+    total_case_count = db.execute(
+        "SELECT COUNT(*) FROM cases WHERE tenant_id = ?", (tenant_id,)
+    ).fetchone()[0]
     summary = {
         "open_count": len(open_cases),
         "urgent_count": sum(1 for c in open_cases if c["urgent"]),
+        "plan": tenant["plan"],
+        "case_count": total_case_count,
+        "case_limit": None if tenant["plan"] == PLAN_PRO else FREE_PLAN_CASE_LIMIT,
     }
     return jsonify({"cases": cases, "summary": summary})
 
@@ -595,6 +604,53 @@ def resolve_case(case_id):
     )
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/api/cases/export", methods=["GET"])
+@admin_required_api
+def export_cases_csv():
+    """案件一覧をCSVで書き出す（第20回・プラン制限とメータリング＝①機能ゲート）。
+
+    "量"ではなく"機能そのもの"をプロプラン限定にする例として、
+    CSVエクスポートを選んだ。フリープランでも画面上のダッシュボードは
+    無制限に見られるが、データを持ち出す（バックアップ・他ツール連携）
+    機能だけはプロプランの価値として区切る。
+    """
+    tenant_id = current_user()["tenant_id"]
+    tenant = get_tenant(tenant_id)
+    if tenant["plan"] != PLAN_PRO:
+        return (
+            jsonify(
+                {
+                    "error": "CSVエクスポートはプロプラン限定の機能です。"
+                    "プロプランにアップグレードするとご利用いただけます。",
+                    "upgrade_required": True,
+                }
+            ),
+            403,
+        )
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM cases WHERE tenant_id = ? ORDER BY id", (tenant_id,)
+    ).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["患者", "担当医師", "手術日", "内容", "経過日数", "ステータス"])
+    for row in rows:
+        c = row_to_case(row)
+        writer.writerow(
+            [c["patient_label"], c["doctor_name"], c["surgery_date"], c["item"], c["days_elapsed"], c["status"]]
+        )
+
+    # 先頭にBOMを付けないと、Excelで開いたときに日本語が文字化けする
+    csv_body = "﻿" + output.getvalue()
+    return app.response_class(
+        csv_body,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=cases.csv"},
+    )
 
 
 # ---------------------------------------------------------------------------
