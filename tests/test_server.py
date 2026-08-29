@@ -288,6 +288,81 @@ def test_billing_success_rejects_mismatched_tenant():
     assert "一致しません" in res.get_data(as_text=True)
 
 
+# ---------------------------------------------------------------------------
+# プラン制限とメータリング（第20回・①機能ゲート＝CSVエクスポート）
+# ---------------------------------------------------------------------------
+
+
+def test_csv_export_blocked_on_free_plan():
+    client = app.test_client()
+    tenant_a, _ = get_tenant_ids(client)
+    admin_pw = signup_and_verify(client, tenant_a, "export-free@example.com")
+    login(client, "export-free@example.com", admin_pw)
+
+    res = client.get("/api/cases/export")
+    assert res.status_code == 403
+    assert res.get_json()["upgrade_required"] is True
+
+
+def test_csv_export_requires_admin():
+    client = app.test_client()
+    tenant_a, _ = get_tenant_ids(client)
+    signup_and_verify(client, tenant_a, "export-admin0@example.com")
+    staff_pw = signup_and_verify(client, tenant_a, "export-staff@example.com")
+    login(client, "export-staff@example.com", staff_pw)
+
+    res = client.get("/api/cases/export")
+    assert res.status_code == 403
+
+
+def test_csv_export_succeeds_on_pro_plan():
+    client = app.test_client()
+    tenant_a, _ = get_tenant_ids(client)
+    admin_pw = signup_and_verify(client, tenant_a, "export-pro@example.com")
+    login(client, "export-pro@example.com", admin_pw)
+    tenant_id = client.get("/api/me").get_json()["tenant_id"]
+    upgrade_to_pro(client, tenant_id)
+
+    client.post("/api/cases", json=new_case_payload("CSV確認用患者"))
+    res = client.get("/api/cases/export")
+
+    assert res.status_code == 200
+    assert res.mimetype == "text/csv"
+    body = res.get_data(as_text=True)
+    assert "患者,担当医師" in body
+    assert "CSV確認用患者" in body
+
+
+# ---------------------------------------------------------------------------
+# プラン制限とメータリング（第20回・②使用量の可視化）
+# ---------------------------------------------------------------------------
+
+
+def test_case_list_summary_reports_usage_against_free_limit():
+    client = app.test_client()
+    tenant_a, _ = get_tenant_ids(client)
+    admin_pw = signup_and_verify(client, tenant_a, "usage-free@example.com")
+    login(client, "usage-free@example.com", admin_pw)
+
+    summary = client.get("/api/cases").get_json()["summary"]
+    assert summary["plan"] == "free"
+    assert summary["case_limit"] == server.FREE_PLAN_CASE_LIMIT
+    assert summary["case_count"] == len(client.get("/api/cases").get_json()["cases"])
+
+
+def test_case_list_summary_has_no_limit_on_pro_plan():
+    client = app.test_client()
+    tenant_a, _ = get_tenant_ids(client)
+    admin_pw = signup_and_verify(client, tenant_a, "usage-pro@example.com")
+    login(client, "usage-pro@example.com", admin_pw)
+    tenant_id = client.get("/api/me").get_json()["tenant_id"]
+    upgrade_to_pro(client, tenant_id)
+
+    summary = client.get("/api/cases").get_json()["summary"]
+    assert summary["plan"] == "pro"
+    assert summary["case_limit"] is None
+
+
 def test_pro_plan_has_no_case_limit():
     client = app.test_client()
     tenant_a, _ = get_tenant_ids(client)
