@@ -1,0 +1,14 @@
+{% extends "auth_base.html" %}
+{% block title %}運営ログイン{% endblock %}
+{% block content %}
+<h1>運営用管理画面</h1>
+<p class="sub">契約中のクリニックの状況を確認する、運営者専用のページです。</p>
+{% if error %}<div class="msg error">パスワードが正しくありません。</div>{% endif %}
+<form method="post">
+  <label for="password">運営パスワード</label>
+  <input type="password" id="password" name="password" required autofocus>
+  <button type="submit" class="primary">ログイン</button>
+</form>
+<div class="links"><a href="/login">クリニック向けログインへ戻る</a></div>
+<p class="demo-note">このページはクリニックのスタッフ用ログインとは別物です。運営パスワードは環境変数（OPS_PASSWORD）で設定します。</p>
+{% endblock %}
