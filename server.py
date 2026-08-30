@@ -39,6 +39,13 @@ if not STRIPE_WEBHOOK_SECRET:
         "StripeのWebhookエンドポイント設定画面で発行される署名シークレットを環境変数に設定してください。"
     )
 
+OPS_PASSWORD = os.environ.get("OPS_PASSWORD")
+if not OPS_PASSWORD:
+    app.logger.warning(
+        "OPS_PASSWORD未設定：運営用管理画面（/ops）にアクセスできません。"
+        "運営者だけが知るパスワードを環境変数に設定してください。"
+    )
+
 DB_PATH = Path(__file__).parent / "cases.db"
 URGENT_DAYS = 3  # これ以上未入力が続いたら「要対応」として赤く表示
 
@@ -132,6 +139,7 @@ def init_db():
                 reset_token TEXT,
                 reset_expires TEXT,
                 created_at TEXT NOT NULL,
+                last_login_at TEXT,
                 FOREIGN KEY (tenant_id) REFERENCES tenants (id)
             )
             """
@@ -149,6 +157,8 @@ def init_db():
             db.execute("ALTER TABLE tenants ADD COLUMN stripe_subscription_id TEXT")
         if not column_exists(db, "tenants", "invite_code"):
             db.execute("ALTER TABLE tenants ADD COLUMN invite_code TEXT")
+        if not column_exists(db, "users", "last_login_at"):
+            db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
 
         tenant_count = db.execute("SELECT COUNT(*) FROM tenants").fetchone()[0]
         if tenant_count == 0:
@@ -227,6 +237,25 @@ def row_to_case(row):
         "days_elapsed": days_elapsed,
         "urgent": row["status"] == "未入力" and days_elapsed >= URGENT_DAYS,
     }
+
+
+# ---------------------------------------------------------------------------
+# 監視（第22回・稼働監視とアラート）
+#   UptimeRobot等の外部監視から定期的に叩いてもらう窓口。ただのページ表示
+#   （200が返るだけ）ではなく、実際にDBへ接続できるかまで確認することで、
+#   「画面は出るがDBが壊れている」ような半分死んだ状態も検知できるようにする。
+#   ログイン不要（監視ツールはログインできないため）。
+# ---------------------------------------------------------------------------
+
+
+@app.route("/healthz")
+def healthz():
+    try:
+        get_db().execute("SELECT 1").fetchone()
+    except sqlite3.Error as e:
+        app.logger.error("ヘルスチェック失敗（DB接続不可）: %s", e)
+        return jsonify({"status": "error", "detail": "database unavailable"}), 503
+    return jsonify({"status": "ok"}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +439,11 @@ def login():
             jsonify({"error": "メールアドレスの確認がまだ完了していません。届いた確認リンクをクリックしてください。"}),
             403,
         )
+
+    db.execute(
+        "UPDATE users SET last_login_at = ? WHERE id = ?", (datetime.now().isoformat(), user["id"])
+    )
+    db.commit()
 
     session.clear()
     session["user_id"] = user["id"]
@@ -819,6 +853,74 @@ def stripe_webhook():
 
     # 未対応のイベント種類も200を返しておく（そうしないとStripeが同じ通知を再送し続ける）
     return jsonify({"received": True})
+
+
+# ---------------------------------------------------------------------------
+# 運営用管理画面（第22回・顧客がいる前提の運用）
+#   クリニックのスタッフ（users/tenantsのログイン）とは完全に別物。
+#   運営者（このSaaSを提供している本人）だけが、契約中の各クリニックの
+#   プラン・利用状況・最終ログインをひと目で確認できる画面。
+#   本人1人だけが使う想定のため、共有パスワード1つだけのシンプルな認証
+#   にとどめている（招待コードやロールのような仕組みは不要と判断）。
+# ---------------------------------------------------------------------------
+
+
+def ops_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("ops_authenticated"):
+            return redirect(url_for("ops_login_page"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+@app.route("/ops/login", methods=["GET", "POST"])
+def ops_login_page():
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if OPS_PASSWORD and secrets.compare_digest(password, OPS_PASSWORD):
+            session["ops_authenticated"] = True
+            return redirect(url_for("ops_dashboard"))
+        return redirect(url_for("ops_login_page", error="1"))
+    return render_template("ops_login.html", error=request.args.get("error"))
+
+
+@app.route("/ops/logout", methods=["POST"])
+def ops_logout():
+    session.pop("ops_authenticated", None)
+    return redirect(url_for("ops_login_page"))
+
+
+@app.route("/ops")
+@ops_required
+def ops_dashboard():
+    db = get_db()
+    tenants = db.execute("SELECT * FROM tenants ORDER BY id").fetchall()
+
+    rows = []
+    for tenant in tenants:
+        tenant_id = tenant["id"]
+        case_rows = db.execute("SELECT * FROM cases WHERE tenant_id = ?", (tenant_id,)).fetchall()
+        cases = [row_to_case(r) for r in case_rows]
+        user_count = db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id = ?", (tenant_id,)
+        ).fetchone()[0]
+        last_login = db.execute(
+            "SELECT MAX(last_login_at) FROM users WHERE tenant_id = ?", (tenant_id,)
+        ).fetchone()[0]
+        rows.append(
+            {
+                "name": tenant["name"],
+                "plan": tenant["plan"],
+                "total_cases": len(cases),
+                "open_cases": sum(1 for c in cases if c["status"] == "未入力"),
+                "urgent_cases": sum(1 for c in cases if c["urgent"]),
+                "user_count": user_count,
+                "last_login": last_login[:16].replace("T", " ") if last_login else None,
+            }
+        )
+    return render_template("ops_dashboard.html", tenants=rows)
 
 
 init_db()

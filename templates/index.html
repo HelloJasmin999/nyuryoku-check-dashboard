@@ -119,6 +119,18 @@
     border-radius: 8px;
     font-size: 0.9rem;
   }
+  #onboarding-banner {
+    display: none;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin: 16px 0;
+  }
+  #onboarding-banner strong { display: block; margin-bottom: 6px; font-size: 1rem; }
+  #onboarding-banner p { margin: 0; color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+  #onboarding-banner a { color: var(--accent); }
   #msg-box.error { background: #fdecec; color: var(--urgent); border: 1px solid #f3b4b4; display: block; }
   #msg-box.info { background: #e8f0fe; color: var(--accent); border: 1px solid #b6cdf9; display: block; }
   #msg-box a.upgrade-link {
@@ -247,6 +259,8 @@
 
   <div id="msg-box"></div>
 
+  <div id="onboarding-banner"></div>
+
   <div class="summary">
     <div class="card">
       <div class="num" id="open-count">-</div>
@@ -301,6 +315,8 @@
 </div>
 
 <script>
+const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+const onboardingBanner = document.getElementById('onboarding-banner');
 const caseList = document.getElementById('case-list');
 const openCountEl = document.getElementById('open-count');
 const urgentCountEl = document.getElementById('urgent-count');
@@ -336,6 +352,24 @@ function renderUsage(summary) {
   const ratio = Math.min(1, summary.case_count / summary.case_limit);
   usageBarFillEl.style.width = `${ratio * 100}%`;
   usageBarFillEl.classList.toggle('near-limit', ratio >= 0.8);
+}
+
+function renderOnboarding(caseCount) {
+  if (caseCount > 0) {
+    onboardingBanner.style.display = 'none';
+    return;
+  }
+  onboardingBanner.style.display = 'block';
+  if (IS_ADMIN) {
+    onboardingBanner.innerHTML =
+      '<strong>ようこそ！まずは1件登録してみましょう</strong>' +
+      '<p>下の「案件を追加する」フォームから、患者ラベル・担当医師・手術日・内容を入力すると、この一覧に表示されるようになります。' +
+      '<a href="#add-form">↓ フォームへ移動する</a></p>';
+  } else {
+    onboardingBanner.innerHTML =
+      '<strong>ようこそ！</strong>' +
+      '<p>まだ案件が登録されていません。管理者が案件を登録すると、ここに一覧が表示されます。</p>';
+  }
 }
 
 if (exportBtn) {
@@ -401,6 +435,7 @@ async function loadCases() {
     openCountEl.textContent = data.summary.open_count;
     urgentCountEl.textContent = data.summary.urgent_count;
     renderUsage(data.summary);
+    renderOnboarding(data.summary.case_count);
   } catch (e) {
     showMessage('一覧の読み込みに失敗しました。時間を置いて再度お試しください。', 'error');
   }
