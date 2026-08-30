@@ -1,3 +1,4 @@
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -531,3 +532,106 @@ def test_webhook_ignores_unrelated_event_types(monkeypatch):
         )
 
     assert res.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 監視・運営用管理画面（第22回・顧客がいる前提の運用）
+# ---------------------------------------------------------------------------
+
+
+def test_healthz_returns_ok():
+    client = app.test_client()
+    res = client.get("/healthz")
+    assert res.status_code == 200
+    assert res.get_json()["status"] == "ok"
+
+
+def test_healthz_returns_503_when_db_unavailable(monkeypatch):
+    client = app.test_client()
+
+    def broken_get_db():
+        raise sqlite3.Error("db down")
+
+    monkeypatch.setattr(server, "get_db", broken_get_db)
+    res = client.get("/healthz")
+    assert res.status_code == 503
+
+
+def test_login_records_last_login_at():
+    client = app.test_client()
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "lastlogin@example.com")
+
+    with app.app_context():
+        before = server.get_db().execute(
+            "SELECT last_login_at FROM users WHERE email = ?", ("lastlogin@example.com",)
+        ).fetchone()["last_login_at"]
+    assert before is None
+
+    login(client, "lastlogin@example.com", admin_pw)
+
+    with app.app_context():
+        after = server.get_db().execute(
+            "SELECT last_login_at FROM users WHERE email = ?", ("lastlogin@example.com",)
+        ).fetchone()["last_login_at"]
+    assert after is not None
+
+
+def test_ops_dashboard_requires_login(monkeypatch):
+    monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
+    client = app.test_client()
+    res = client.get("/ops")
+    assert res.status_code == 302
+    assert "/ops/login" in res.headers["Location"]
+
+
+def test_ops_login_wrong_password_rejected(monkeypatch):
+    monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
+    client = app.test_client()
+
+    res = client.post("/ops/login", data={"password": "wrong"})
+    assert res.status_code == 302
+    assert "error" in res.headers["Location"]
+    assert client.get("/ops").status_code == 302
+
+
+def test_ops_login_correct_password_grants_access(monkeypatch):
+    monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
+    client = app.test_client()
+
+    res = client.post("/ops/login", data={"password": "secret123"})
+    assert res.status_code == 302
+    assert res.headers["Location"].endswith("/ops")
+
+    res = client.get("/ops")
+    assert res.status_code == 200
+
+
+def test_ops_dashboard_shows_tenant_usage(monkeypatch):
+    monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
+    client = app.test_client()
+    client.post("/ops/login", data={"password": "secret123"})
+
+    body = client.get("/ops").get_data(as_text=True)
+    assert "フリープラン" in body or "プロプラン" in body
+
+
+def test_ops_dashboard_shows_invite_codes(monkeypatch):
+    monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
+    client = app.test_client()
+    client.post("/ops/login", data={"password": "secret123"})
+
+    invite_a, invite_b = get_invite_codes()
+    body = client.get("/ops").get_data(as_text=True)
+    assert invite_a in body
+    assert invite_b in body
+
+
+def test_ops_logout_revokes_access(monkeypatch):
+    monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
+    client = app.test_client()
+    client.post("/ops/login", data={"password": "secret123"})
+    assert client.get("/ops").status_code == 200
+
+    client.post("/ops/logout")
+    assert client.get("/ops").status_code == 302
