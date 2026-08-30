@@ -87,6 +87,12 @@
   .status-pill.quiet { background: #e6f4ea; color: var(--ok); }
   .no-login { color: var(--muted); }
   .empty { color: var(--muted); padding: 20px; text-align: center; }
+  td code {
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+  }
 </style>
 </head>
 <body>
@@ -108,6 +114,7 @@
       <tr>
         <th>クリニック名</th>
         <th>プラン</th>
+        <th>招待コード</th>
         <th>案件数（未入力 / 合計）</th>
         <th>要対応</th>
         <th>利用者数</th>
@@ -116,12 +123,13 @@
     </thead>
     <tbody>
       {% if tenants|length == 0 %}
-      <tr><td colspan="6" class="empty">クリニックがまだ登録されていません</td></tr>
+      <tr><td colspan="7" class="empty">クリニックがまだ登録されていません</td></tr>
       {% endif %}
       {% for t in tenants %}
       <tr>
         <td>{{ t.name }}</td>
         <td><span class="plan-badge {{ t.plan }}">{{ 'プロプラン' if t.plan == 'pro' else 'フリープラン' }}</span></td>
+        <td><code>{{ t.invite_code }}</code></td>
         <td>{{ t.open_cases }} / {{ t.total_cases }}</td>
         <td>
           {% if t.urgent_cases > 0 %}

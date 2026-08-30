@@ -913,6 +913,7 @@ def ops_dashboard():
             {
                 "name": tenant["name"],
                 "plan": tenant["plan"],
+                "invite_code": tenant["invite_code"],
                 "total_cases": len(cases),
                 "open_cases": sum(1 for c in cases if c["status"] == "未入力"),
                 "urgent_cases": sum(1 for c in cases if c["urgent"]),
