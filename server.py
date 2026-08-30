@@ -329,6 +329,28 @@ def signup_page():
     return render_template("signup.html")
 
 
+# ---------------------------------------------------------------------------
+# 法務ページ（第23回・市場リリース総合演習）
+#   ログイン不要で誰でも閲覧できる公開ページ。事業者情報など実在情報が
+#   必要な箇所はテンプレート内に「たたき台」としてプレースホルダーで
+#   記載しており、公開前に本人が実情報へ置き換え、専門家の確認を
+#   受けることを前提とする。
+# ---------------------------------------------------------------------------
+@app.route("/terms")
+def terms_page():
+    return render_template("terms.html")
+
+
+@app.route("/tokushoho")
+def tokushoho_page():
+    return render_template("tokushoho.html")
+
+
+@app.route("/privacy")
+def privacy_page():
+    return render_template("privacy.html")
+
+
 @app.route("/api/signup", methods=["POST"])
 def signup():
     """新規登録（第21回・テナント越境防止で招待コード方式に変更）。

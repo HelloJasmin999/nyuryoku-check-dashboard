@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}規約{% endblock %} - 入力漏れ確認ダッシュボード</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --card-bg: #ffffff;
+    --text: #1f2933;
+    --muted: #6b7280;
+    --border: #e2e8f0;
+    --accent: #2563eb;
+    --warn: #8a6300;
+    --warn-bg: #fff3cd;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 16px 60px;
+    line-height: 1.7;
+  }
+  .container { max-width: 720px; margin: 0 auto; }
+  .back-link { display: inline-block; margin-bottom: 16px; color: var(--accent); text-decoration: none; font-size: 0.85rem; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 28px; }
+  h1 { font-size: 1.3rem; margin-top: 0; }
+  h2 { font-size: 1.05rem; margin: 28px 0 8px; border-left: 4px solid var(--accent); padding-left: 8px; }
+  p, li { font-size: 0.92rem; color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { width: 34%; color: var(--muted); font-weight: normal; white-space: nowrap; }
+  .placeholder { color: #b45309; background: #fff8ec; padding: 1px 4px; border-radius: 3px; }
+  .demo-banner {
+    margin-bottom: 20px;
+    padding: 12px 16px;
+    background: var(--warn-bg);
+    color: var(--warn);
+    border: 1px solid #ffe69c;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+  .legal-nav { margin-top: 24px; font-size: 0.85rem; }
+  .legal-nav a { color: var(--accent); text-decoration: none; margin-right: 14px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <a class="back-link" href="/">← ダッシュボードに戻る</a>
+  <div class="card">
+    <div class="demo-banner">
+      本ページはクロードコード部の学習用デモとして作成した<strong>たたき台</strong>です。
+      <span class="placeholder">オレンジ色の箇所</span>は実在の事業者情報に置き換え、
+      公開前に必ず弁護士・税理士などの専門家にご確認ください。
+    </div>
+    {% block content %}{% endblock %}
+    <div class="legal-nav">
+      <a href="/terms">利用規約</a>
+      <a href="/tokushoho">特定商取引法に基づく表記</a>
+      <a href="/privacy">プライバシーポリシー</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>
