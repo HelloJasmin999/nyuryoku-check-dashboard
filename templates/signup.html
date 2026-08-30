@@ -2,12 +2,12 @@
 {% block title %}新規登録{% endblock %}
 {% block content %}
 <h1>新規登録</h1>
-<p class="sub">所属するクリニックを選び、メールアドレスとパスワードを登録してください。</p>
+<p class="sub">クリニックの管理者から共有された招待コードと、メールアドレス・パスワードを登録してください。</p>
 
 <div id="msg-box" class="msg"></div>
 
-<label for="f-tenant">所属するクリニック</label>
-<select id="f-tenant"></select>
+<label for="f-invite">招待コード</label>
+<input type="text" id="f-invite" autocomplete="off" placeholder="管理者から共有されたコード">
 
 <label for="f-email">メールアドレス</label>
 <input type="email" id="f-email" autocomplete="email" placeholder="you@example.com">
@@ -28,20 +28,6 @@ function showMsg(html, type) {
   msgBox.innerHTML = html;
 }
 
-async function loadTenants() {
-  const res = await fetch('/api/tenants');
-  const data = await res.json();
-  const sel = document.getElementById('f-tenant');
-  sel.innerHTML = '';
-  for (const t of data.tenants) {
-    const opt = document.createElement('option');
-    opt.value = t.id;
-    opt.textContent = t.name;
-    sel.appendChild(opt);
-  }
-}
-loadTenants();
-
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
@@ -50,7 +36,7 @@ function escapeHtml(str) {
 
 const submitBtn = document.getElementById('f-submit');
 submitBtn.addEventListener('click', async () => {
-  const tenant_id = document.getElementById('f-tenant').value;
+  const invite_code = document.getElementById('f-invite').value.trim();
   const email = document.getElementById('f-email').value.trim();
   const password = document.getElementById('f-password').value;
 
@@ -60,7 +46,7 @@ submitBtn.addEventListener('click', async () => {
     const res = await fetch('/api/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenant_id, email, password })
+      body: JSON.stringify({ invite_code, email, password })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '登録に失敗しました');

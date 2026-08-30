@@ -236,6 +236,7 @@
       <span class="plan-badge {{ tenant_plan }}">{{ 'プロプラン' if tenant_plan == 'pro' else 'フリープラン' }}</span>
       <span class="role-badge {{ 'admin' if is_admin else 'staff' }}">{{ '管理者' if is_admin else '一般ユーザー' }}</span>
       <span>{{ user_email }}</span>
+      {% if is_admin %}<span style="color: var(--muted); font-size: 0.85rem;">招待コード：<code>{{ invite_code }}</code>（新しいスタッフに共有してください）</span>{% endif %}
     </div>
     <div>
       {% if is_admin %}<button id="export-btn" class="export-btn" type="button">CSVエクスポート{% if tenant_plan != 'pro' %} 🔒{% endif %}</button>{% endif %}
