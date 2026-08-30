@@ -15,7 +15,12 @@
 <label for="f-password">パスワード（{{ '' }}8文字以上）</label>
 <input type="password" id="f-password" autocomplete="new-password">
 
-<button type="button" class="primary" id="f-submit">登録する</button>
+<label style="display:flex; align-items:flex-start; gap:6px; margin-top:16px; font-size:0.85rem; color:var(--text);">
+  <input type="checkbox" id="f-agree" style="width:auto; margin-top:2px;">
+  <span><a href="/terms" target="_blank">利用規約</a>と<a href="/privacy" target="_blank">プライバシーポリシー</a>に同意する</span>
+</label>
+
+<button type="button" class="primary" id="f-submit" disabled>登録する</button>
 
 <p class="demo-note">※そのクリニックで最初に登録した方が自動的に「管理者」になります。</p>
 
@@ -35,6 +40,11 @@ function escapeHtml(str) {
 }
 
 const submitBtn = document.getElementById('f-submit');
+const agreeBox = document.getElementById('f-agree');
+agreeBox.addEventListener('change', () => {
+  submitBtn.disabled = !agreeBox.checked;
+});
+
 submitBtn.addEventListener('click', async () => {
   const invite_code = document.getElementById('f-invite').value.trim();
   const email = document.getElementById('f-email').value.trim();

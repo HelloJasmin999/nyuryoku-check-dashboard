@@ -52,6 +52,25 @@ def test_index_redirects_to_login_when_not_authenticated():
     assert "/login" in response.headers["Location"]
 
 
+# ---------------------------------------------------------------------------
+# 法務ページ（第23回・市場リリース総合演習）
+# ---------------------------------------------------------------------------
+
+
+def test_legal_pages_are_public_and_reachable_without_login():
+    client = app.test_client()
+    terms = client.get("/terms")
+    tokushoho = client.get("/tokushoho")
+    privacy = client.get("/privacy")
+
+    assert terms.status_code == 200
+    assert "利用規約" in terms.get_data(as_text=True)
+    assert tokushoho.status_code == 200
+    assert "特定商取引法に基づく表記" in tokushoho.get_data(as_text=True)
+    assert privacy.status_code == 200
+    assert "プライバシーポリシー" in privacy.get_data(as_text=True)
+
+
 def test_signup_creates_unverified_user_and_blocks_login():
     client = app.test_client()
     invite_a, _ = get_invite_codes()
