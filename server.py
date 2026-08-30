@@ -50,6 +50,11 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 VERIFY_TOKEN_HOURS = 24
 RESET_TOKEN_HOURS = 1
 
+
+def generate_invite_code():
+    # クリニックへの参加に使う合言葉。URLに貼っても壊れないtoken_urlsafeを使う。
+    return secrets.token_urlsafe(6)
+
 # ---------------------------------------------------------------------------
 # プラン設計（第18回・課金①）
 #   フリー：案件を累計20件まで登録可能（お試し用）
@@ -91,7 +96,8 @@ def init_db():
                 name TEXT NOT NULL,
                 plan TEXT NOT NULL DEFAULT 'free',
                 stripe_customer_id TEXT,
-                stripe_subscription_id TEXT
+                stripe_subscription_id TEXT,
+                invite_code TEXT UNIQUE
             )
             """
         )
@@ -141,10 +147,25 @@ def init_db():
             db.execute("ALTER TABLE tenants ADD COLUMN stripe_customer_id TEXT")
         if not column_exists(db, "tenants", "stripe_subscription_id"):
             db.execute("ALTER TABLE tenants ADD COLUMN stripe_subscription_id TEXT")
+        if not column_exists(db, "tenants", "invite_code"):
+            db.execute("ALTER TABLE tenants ADD COLUMN invite_code TEXT")
 
         tenant_count = db.execute("SELECT COUNT(*) FROM tenants").fetchone()[0]
         if tenant_count == 0:
             seed_demo_tenants(db)
+
+        # 第21回より前に作られたテナントには招待コードが無いので、ここで発行する
+        # （サインアップ画面から招待コード入力に変わり、以後は新規参加できないため）。
+        tenants_missing_code = db.execute(
+            "SELECT id FROM tenants WHERE invite_code IS NULL"
+        ).fetchall()
+        for row in tenants_missing_code:
+            db.execute(
+                "UPDATE tenants SET invite_code = ? WHERE id = ?",
+                (generate_invite_code(), row["id"]),
+            )
+        if tenants_missing_code:
+            db.commit()
 
         # tenant_id未設定の既存データは、移行時に混ざらないよう先頭テナントに寄せる
         default_tenant_id = db.execute("SELECT id FROM tenants ORDER BY id LIMIT 1").fetchone()[0]
@@ -156,8 +177,14 @@ def init_db():
 
 
 def seed_demo_tenants(db):
-    db.execute("INSERT INTO tenants (slug, name) VALUES ('sakura', 'さくらクリニック')")
-    db.execute("INSERT INTO tenants (slug, name) VALUES ('midori', 'みどり病院')")
+    db.execute(
+        "INSERT INTO tenants (slug, name, invite_code) VALUES ('sakura', 'さくらクリニック', ?)",
+        (generate_invite_code(),),
+    )
+    db.execute(
+        "INSERT INTO tenants (slug, name, invite_code) VALUES ('midori', 'みどり病院', ?)",
+        (generate_invite_code(),),
+    )
     db.commit()
 
 
@@ -275,27 +302,34 @@ def signup_page():
 
 @app.route("/api/signup", methods=["POST"])
 def signup():
+    """新規登録（第21回・テナント越境防止で招待コード方式に変更）。
+
+    以前はクリニックをID指定で自由に選べたため、クリニック一覧を知って
+    さえいれば誰でも他院のスタッフとして入り込めてしまっていた。
+    今後は各クリニックの招待コード（合言葉）を知っている人だけが
+    参加できるようにする。招待コードは管理者の画面（トップページ）に
+    表示され、新しいスタッフへは口頭・LINE等の対面に近い経路で共有する
+    想定（招待コード自体を不特定多数に公開しないことが前提）。
+    """
     data = request.get_json(silent=True) or {}
-    tenant_id_raw = data.get("tenant_id")
+    invite_code = (data.get("invite_code") or "").strip()
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
 
-    if not tenant_id_raw or not email or not password:
+    if not invite_code or not email or not password:
         return jsonify({"error": "すべての項目を入力してください。"}), 400
     if not EMAIL_RE.match(email):
         return jsonify({"error": "メールアドレスの形式が正しくありません。"}), 400
     if len(password) < PASSWORD_MIN:
         return jsonify({"error": f"パスワードは{PASSWORD_MIN}文字以上にしてください。"}), 400
 
-    try:
-        tenant_id = int(tenant_id_raw)
-    except ValueError:
-        return jsonify({"error": "クリニックの指定が正しくありません。"}), 400
-
     db = get_db()
-    tenant = db.execute("SELECT id FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+    tenant = db.execute(
+        "SELECT id FROM tenants WHERE invite_code = ?", (invite_code,)
+    ).fetchone()
     if tenant is None:
-        return jsonify({"error": "存在しないクリニックです。"}), 400
+        return jsonify({"error": "招待コードが正しくありません。管理者に確認してください。"}), 400
+    tenant_id = tenant["id"]
 
     existing = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
     if existing is not None:
@@ -399,6 +433,8 @@ def me():
             "role": user["role"],
             "tenant_id": user["tenant_id"],
             "tenant_name": tenant["name"],
+            # 招待コードは新しいスタッフを招く鍵なので、管理者にしか返さない。
+            "invite_code": tenant["invite_code"] if user["role"] == "admin" else None,
         }
     )
 
@@ -479,15 +515,8 @@ def index():
         is_admin=user["role"] == "admin",
         tenant_name=tenant["name"],
         tenant_plan=tenant["plan"],
+        invite_code=tenant["invite_code"] if user["role"] == "admin" else None,
     )
-
-
-@app.route("/api/tenants", methods=["GET"])
-def list_tenants():
-    # サインアップ画面のクリニック選択に使うため、名前一覧のみ認証不要で公開する。
-    db = get_db()
-    rows = db.execute("SELECT id, slug, name FROM tenants ORDER BY id").fetchall()
-    return jsonify({"tenants": [dict(r) for r in rows]})
 
 
 @app.route("/api/cases", methods=["GET"])

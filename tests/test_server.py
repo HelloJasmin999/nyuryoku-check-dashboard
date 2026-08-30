@@ -5,15 +5,15 @@ import server
 from server import app
 
 
-def signup(client, tenant_id, email, password="Passw0rd!"):
+def signup(client, invite_code, email, password="Passw0rd!"):
     return client.post(
         "/api/signup",
-        json={"tenant_id": tenant_id, "email": email, "password": password},
+        json={"invite_code": invite_code, "email": email, "password": password},
     )
 
 
-def signup_and_verify(client, tenant_id, email, password="Passw0rd!"):
-    res = signup(client, tenant_id, email, password)
+def signup_and_verify(client, invite_code, email, password="Passw0rd!"):
+    res = signup(client, invite_code, email, password)
     verify_url = res.get_json()["verify_url"]
     client.get(verify_url)
     return password
@@ -23,9 +23,16 @@ def login(client, email, password):
     return client.post("/api/login", json={"email": email, "password": password})
 
 
-def get_tenant_ids(client):
-    data = client.get("/api/tenants").get_json()
-    return [t["id"] for t in data["tenants"]]
+def get_tenants():
+    """テスト用：招待コードは公開APIが無いので、DBから直接読み出す。"""
+    with app.app_context():
+        db = server.get_db()
+        rows = db.execute("SELECT id, invite_code FROM tenants ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_invite_codes():
+    return [t["invite_code"] for t in get_tenants()]
 
 
 def new_case_payload(patient_label="患者Z"):
@@ -46,17 +53,72 @@ def test_index_redirects_to_login_when_not_authenticated():
 
 def test_signup_creates_unverified_user_and_blocks_login():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    signup(client, tenant_a, "unverified@example.com")
+    invite_a, _ = get_invite_codes()
+    signup(client, invite_a, "unverified@example.com")
 
     res = login(client, "unverified@example.com", "Passw0rd!")
     assert res.status_code == 403
 
 
+# ---------------------------------------------------------------------------
+# テナント越境防止（第21回・招待コード方式への変更）
+# ---------------------------------------------------------------------------
+
+
+def test_signup_rejects_unknown_invite_code():
+    client = app.test_client()
+    res = signup(client, "no-such-code", "ghost@example.com")
+    assert res.status_code == 400
+    assert "招待コード" in res.get_json()["error"]
+
+
+def test_signup_no_longer_accepts_raw_tenant_id():
+    """第21回より前の脆弱な使い方（tenant_idを直接指定）が通らないことを確認する。
+
+    invite_codeを送らずtenant_idだけ送っても、tenant_idは無視され
+    invite_code未入力として弾かれる（＝IDを知っているだけでは参加できない）。
+    """
+    client = app.test_client()
+    tenants = get_tenants()
+    res = client.post(
+        "/api/signup",
+        json={
+            "tenant_id": tenants[0]["id"],
+            "email": "sneaky@example.com",
+            "password": "Passw0rd!",
+        },
+    )
+    assert res.status_code == 400
+
+    login_res = login(client, "sneaky@example.com", "Passw0rd!")
+    assert login_res.status_code == 401  # アカウント自体が作られていないこと
+
+
+def test_tenant_list_endpoint_removed_to_prevent_enumeration():
+    """他院のクリニック名・IDを外部から一覧できないことを確認する。"""
+    client = app.test_client()
+    res = client.get("/api/tenants")
+    assert res.status_code == 404
+
+
+def test_invite_code_is_only_visible_to_admin():
+    client = app.test_client()
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "invite-admin@example.com")
+    staff_pw = signup_and_verify(client, invite_a, "invite-staff@example.com")
+
+    login(client, "invite-admin@example.com", admin_pw)
+    assert client.get("/api/me").get_json()["invite_code"] == invite_a
+    client.post("/api/logout")
+
+    login(client, "invite-staff@example.com", staff_pw)
+    assert client.get("/api/me").get_json()["invite_code"] is None
+
+
 def test_verify_then_login_succeeds():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    password = signup_and_verify(client, tenant_a, "verified@example.com")
+    invite_a, _ = get_invite_codes()
+    password = signup_and_verify(client, invite_a, "verified@example.com")
 
     res = login(client, "verified@example.com", password)
     assert res.status_code == 200
@@ -65,8 +127,8 @@ def test_verify_then_login_succeeds():
 
 def test_login_wrong_password_rejected():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    signup_and_verify(client, tenant_a, "pwcheck@example.com")
+    invite_a, _ = get_invite_codes()
+    signup_and_verify(client, invite_a, "pwcheck@example.com")
 
     res = login(client, "pwcheck@example.com", "WrongPassword1")
     assert res.status_code == 401
@@ -74,8 +136,8 @@ def test_login_wrong_password_rejected():
 
 def test_logout_clears_session():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    password = signup_and_verify(client, tenant_a, "logout-check@example.com")
+    invite_a, _ = get_invite_codes()
+    password = signup_and_verify(client, invite_a, "logout-check@example.com")
     login(client, "logout-check@example.com", password)
     assert client.get("/").status_code == 200
 
@@ -85,14 +147,14 @@ def test_logout_clears_session():
 
 def test_first_user_of_tenant_is_admin_second_is_staff():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
+    invite_a, _ = get_invite_codes()
 
-    pw1 = signup_and_verify(client, tenant_a, "first@example.com")
+    pw1 = signup_and_verify(client, invite_a, "first@example.com")
     login(client, "first@example.com", pw1)
     role1 = client.get("/api/me").get_json()["role"]
     client.post("/api/logout")
 
-    pw2 = signup_and_verify(client, tenant_a, "second@example.com")
+    pw2 = signup_and_verify(client, invite_a, "second@example.com")
     login(client, "second@example.com", pw2)
     role2 = client.get("/api/me").get_json()["role"]
 
@@ -102,10 +164,10 @@ def test_first_user_of_tenant_is_admin_second_is_staff():
 
 def test_staff_cannot_add_case_but_admin_can():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
+    invite_a, _ = get_invite_codes()
 
-    admin_pw = signup_and_verify(client, tenant_a, "admin1@example.com")
-    staff_pw = signup_and_verify(client, tenant_a, "staff1@example.com")
+    admin_pw = signup_and_verify(client, invite_a, "admin1@example.com")
+    staff_pw = signup_and_verify(client, invite_a, "staff1@example.com")
 
     login(client, "staff1@example.com", staff_pw)
     staff_res = client.post("/api/cases", json=new_case_payload())
@@ -120,9 +182,9 @@ def test_staff_cannot_add_case_but_admin_can():
 def test_tenant_cannot_see_other_tenants_cases():
     """課題28で作ったテナント分離を、ヘッダ自己申告ではなくログインセッションで再確認する。"""
     client = app.test_client()
-    tenant_a, tenant_b = get_tenant_ids(client)
+    invite_a, invite_b = get_invite_codes()
 
-    pw_a = signup_and_verify(client, tenant_a, "iso-a@example.com")
+    pw_a = signup_and_verify(client, invite_a, "iso-a@example.com")
     login(client, "iso-a@example.com", pw_a)
     create_res = client.post("/api/cases", json=new_case_payload("越境テスト患者"))
     assert create_res.status_code == 201
@@ -132,7 +194,7 @@ def test_tenant_cannot_see_other_tenants_cases():
     assert "越境テスト患者" in labels_a
     client.post("/api/logout")
 
-    pw_b = signup_and_verify(client, tenant_b, "iso-b@example.com")
+    pw_b = signup_and_verify(client, invite_b, "iso-b@example.com")
     login(client, "iso-b@example.com", pw_b)
     list_as_b = client.get("/api/cases").get_json()
     labels_b = [c["patient_label"] for c in list_as_b["cases"]]
@@ -141,15 +203,15 @@ def test_tenant_cannot_see_other_tenants_cases():
 
 def test_tenant_cannot_resolve_other_tenants_case():
     client = app.test_client()
-    tenant_a, tenant_b = get_tenant_ids(client)
+    invite_a, invite_b = get_invite_codes()
 
-    pw_a = signup_and_verify(client, tenant_a, "resolve-a@example.com")
+    pw_a = signup_and_verify(client, invite_a, "resolve-a@example.com")
     login(client, "resolve-a@example.com", pw_a)
     list_as_a = client.get("/api/cases").get_json()
     case_of_a = list_as_a["cases"][0]
     client.post("/api/logout")
 
-    pw_b = signup_and_verify(client, tenant_b, "resolve-b@example.com")
+    pw_b = signup_and_verify(client, invite_b, "resolve-b@example.com")
     login(client, "resolve-b@example.com", pw_b)
     resolve_res = client.post(f"/api/cases/{case_of_a['id']}/resolve")
     assert resolve_res.status_code == 404
@@ -164,8 +226,8 @@ def test_forgot_password_does_not_leak_existence():
 
 def test_password_reset_flow_changes_password():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    old_password = signup_and_verify(client, tenant_a, "reset-flow@example.com")
+    invite_a, _ = get_invite_codes()
+    old_password = signup_and_verify(client, invite_a, "reset-flow@example.com")
 
     forgot_res = client.post(
         "/api/forgot-password", json={"email": "reset-flow@example.com"}
@@ -200,8 +262,8 @@ def upgrade_to_pro(client, tenant_id):
 
 def test_free_plan_blocks_case_creation_after_limit():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "limit-admin@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "limit-admin@example.com")
     login(client, "limit-admin@example.com", admin_pw)
 
     # このテナントにはサンプルデータが最初から数件入っているため、
@@ -219,11 +281,11 @@ def test_free_plan_blocks_case_creation_after_limit():
 
 def test_checkout_session_requires_admin():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
+    invite_a, _ = get_invite_codes()
     # 最初の登録者は自動的に管理者になるため、staffロールを検証するには
     # 先にもう1人（管理者役）を登録しておく必要がある。
-    signup_and_verify(client, tenant_a, "checkout-admin0@example.com")
-    staff_pw = signup_and_verify(client, tenant_a, "checkout-staff@example.com")
+    signup_and_verify(client, invite_a, "checkout-admin0@example.com")
+    staff_pw = signup_and_verify(client, invite_a, "checkout-staff@example.com")
     login(client, "checkout-staff@example.com", staff_pw)
 
     res = client.post("/api/checkout/create-session")
@@ -233,8 +295,8 @@ def test_checkout_session_requires_admin():
 def test_checkout_session_without_stripe_key_returns_error(monkeypatch):
     monkeypatch.setattr(server.stripe, "api_key", None)
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "checkout-admin1@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "checkout-admin1@example.com")
     login(client, "checkout-admin1@example.com", admin_pw)
 
     res = client.post("/api/checkout/create-session")
@@ -244,8 +306,8 @@ def test_checkout_session_without_stripe_key_returns_error(monkeypatch):
 def test_checkout_session_creation_success(monkeypatch):
     monkeypatch.setattr(server.stripe, "api_key", "sk_test_dummy")
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "checkout-admin2@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "checkout-admin2@example.com")
     login(client, "checkout-admin2@example.com", admin_pw)
 
     fake_session = MagicMock(url="https://checkout.stripe.com/test-session")
@@ -259,8 +321,8 @@ def test_checkout_session_creation_success(monkeypatch):
 
 def test_billing_success_upgrades_plan_when_payment_confirmed():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "billing-ok@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "billing-ok@example.com")
     login(client, "billing-ok@example.com", admin_pw)
     tenant_id = client.get("/api/me").get_json()["tenant_id"]
 
@@ -272,12 +334,12 @@ def test_billing_success_upgrades_plan_when_payment_confirmed():
 
 def test_billing_success_rejects_mismatched_tenant():
     client = app.test_client()
-    tenant_a, tenant_b = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "billing-mismatch@example.com")
+    tenants = get_tenants()
+    admin_pw = signup_and_verify(client, tenants[0]["invite_code"], "billing-mismatch@example.com")
     login(client, "billing-mismatch@example.com", admin_pw)
 
     fake_session = SimpleNamespace(
-        client_reference_id=str(tenant_b),
+        client_reference_id=str(tenants[1]["id"]),
         payment_status="paid",
         customer="cus_x",
         subscription="sub_x",
@@ -295,8 +357,8 @@ def test_billing_success_rejects_mismatched_tenant():
 
 def test_csv_export_blocked_on_free_plan():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "export-free@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "export-free@example.com")
     login(client, "export-free@example.com", admin_pw)
 
     res = client.get("/api/cases/export")
@@ -306,9 +368,9 @@ def test_csv_export_blocked_on_free_plan():
 
 def test_csv_export_requires_admin():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    signup_and_verify(client, tenant_a, "export-admin0@example.com")
-    staff_pw = signup_and_verify(client, tenant_a, "export-staff@example.com")
+    invite_a, _ = get_invite_codes()
+    signup_and_verify(client, invite_a, "export-admin0@example.com")
+    staff_pw = signup_and_verify(client, invite_a, "export-staff@example.com")
     login(client, "export-staff@example.com", staff_pw)
 
     res = client.get("/api/cases/export")
@@ -317,8 +379,8 @@ def test_csv_export_requires_admin():
 
 def test_csv_export_succeeds_on_pro_plan():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "export-pro@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "export-pro@example.com")
     login(client, "export-pro@example.com", admin_pw)
     tenant_id = client.get("/api/me").get_json()["tenant_id"]
     upgrade_to_pro(client, tenant_id)
@@ -340,8 +402,8 @@ def test_csv_export_succeeds_on_pro_plan():
 
 def test_case_list_summary_reports_usage_against_free_limit():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "usage-free@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "usage-free@example.com")
     login(client, "usage-free@example.com", admin_pw)
 
     summary = client.get("/api/cases").get_json()["summary"]
@@ -352,8 +414,8 @@ def test_case_list_summary_reports_usage_against_free_limit():
 
 def test_case_list_summary_has_no_limit_on_pro_plan():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "usage-pro@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "usage-pro@example.com")
     login(client, "usage-pro@example.com", admin_pw)
     tenant_id = client.get("/api/me").get_json()["tenant_id"]
     upgrade_to_pro(client, tenant_id)
@@ -365,8 +427,8 @@ def test_case_list_summary_has_no_limit_on_pro_plan():
 
 def test_pro_plan_has_no_case_limit():
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "pro-admin@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "pro-admin@example.com")
     login(client, "pro-admin@example.com", admin_pw)
     tenant_id = client.get("/api/me").get_json()["tenant_id"]
 
@@ -413,8 +475,8 @@ def test_webhook_without_secret_configured_returns_error(monkeypatch):
 def test_webhook_subscription_deleted_downgrades_plan(monkeypatch):
     monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "cancel-admin@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "cancel-admin@example.com")
     login(client, "cancel-admin@example.com", admin_pw)
     tenant_id = client.get("/api/me").get_json()["tenant_id"]
 
@@ -437,8 +499,8 @@ def test_webhook_subscription_deleted_downgrades_plan(monkeypatch):
 def test_webhook_ignores_unknown_subscription_id(monkeypatch):
     monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
     client = app.test_client()
-    tenant_a, _ = get_tenant_ids(client)
-    admin_pw = signup_and_verify(client, tenant_a, "cancel-noop-admin@example.com")
+    invite_a, _ = get_invite_codes()
+    admin_pw = signup_and_verify(client, invite_a, "cancel-noop-admin@example.com")
     login(client, "cancel-noop-admin@example.com", admin_pw)
     tenant_id = client.get("/api/me").get_json()["tenant_id"]
 
