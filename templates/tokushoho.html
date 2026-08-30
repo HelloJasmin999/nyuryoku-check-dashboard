@@ -1,0 +1,20 @@
+{% extends "legal_base.html" %}
+{% block title %}特定商取引法に基づく表記{% endblock %}
+{% block content %}
+<h1>特定商取引法に基づく表記</h1>
+<p>特定商取引法第11条に基づき、以下のとおり表示します。</p>
+<table>
+  <tr><th>販売事業者</th><td><span class="placeholder">［氏名または法人名を入力］</span></td></tr>
+  <tr><th>運営統括責任者</th><td><span class="placeholder">［氏名を入力］</span></td></tr>
+  <tr><th>所在地</th><td><span class="placeholder">［住所を入力（個人の場合、請求があれば遅滞なく開示する形も可）］</span></td></tr>
+  <tr><th>電話番号</th><td><span class="placeholder">［電話番号を入力（同上）］</span></td></tr>
+  <tr><th>メールアドレス</th><td><span class="placeholder">［問い合わせ用メールアドレスを入力］</span></td></tr>
+  <tr><th>販売価格</th><td>プロプラン：月額980円（税込）。詳細は<a href="/pricing">料金プランページ</a>をご覧ください。</td></tr>
+  <tr><th>商品代金以外の必要料金</th><td>特にありません（通信費はお客様のご負担となります）。</td></tr>
+  <tr><th>支払方法</th><td>クレジットカード決済（Stripe, Inc.が提供する決済サービスを利用）</td></tr>
+  <tr><th>支払時期</th><td>お申し込み時に決済し、以後は毎月同日に自動更新・請求されます。</td></tr>
+  <tr><th>サービス提供時期</th><td>決済完了後、直ちにプロプランの機能をご利用いただけます。</td></tr>
+  <tr><th>返品・キャンセルについて</th><td>サービスの性質上、決済完了後の返金は原則行いません。次回請求分からの解約は<span class="placeholder">［解約方法・問い合わせ窓口を入力］</span>までご連絡ください。</td></tr>
+  <tr><th>動作環境</th><td>最新版のGoogle ChromeまたはMicrosoft Edge</td></tr>
+</table>
+{% endblock %}
