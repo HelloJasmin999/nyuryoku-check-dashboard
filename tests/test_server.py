@@ -616,6 +616,17 @@ def test_ops_dashboard_shows_tenant_usage(monkeypatch):
     assert "フリープラン" in body or "プロプラン" in body
 
 
+def test_ops_dashboard_shows_invite_codes(monkeypatch):
+    monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
+    client = app.test_client()
+    client.post("/ops/login", data={"password": "secret123"})
+
+    invite_a, invite_b = get_invite_codes()
+    body = client.get("/ops").get_data(as_text=True)
+    assert invite_a in body
+    assert invite_b in body
+
+
 def test_ops_logout_revokes_access(monkeypatch):
     monkeypatch.setattr(server, "OPS_PASSWORD", "secret123")
     client = app.test_client()
